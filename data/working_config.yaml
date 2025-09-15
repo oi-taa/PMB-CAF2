@@ -1,0 +1,11 @@
+# data/working_config.yaml
+path: ./  # or just leave this as the project root
+train_rgb: data/ir_det_3class_paired/train/rgb/images
+train_ir: data/ir_det_3class_paired/train/fir/images
+val_rgb: data/ir_det_3class_paired/val/rgb/images
+val_ir: data/ir_det_3class_paired/val/fir/images
+test_rgb: data/ir_det_3class_paired/val/rgb/images
+test_ir: data/ir_det_3class_paired/val/fir/images
+
+nc: 3
+names: ['person', 'car', 'car_stop']

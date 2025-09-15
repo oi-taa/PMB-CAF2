@@ -1,0 +1,94 @@
+# parameters
+nc: 9  # number of classes (adjust based on your dataset)
+depth_multiple: 0.33  # model depth multiple
+width_multiple: 0.50  # layer channel multiple
+
+# anchors
+anchors:
+  - [10,13, 16,30, 33,23]   # P3/8
+  - [30,61, 62,45, 59,119]  # P4/16
+  - [116,90, 156,198, 373,326]  # P5/32
+
+# YOLOv5 backbone
+backbone:
+  # Two-stream start (keep prior lines above unchanged)
+  - [-1, 1, "Focus", [64, 3]]            # 0 - P1/2 stream A
+  - [-1, 1, "Conv", [128, 3, 2]]         # 1 - P2/4 stream A
+  - [-1, 3, "C3", [128]]                 # 2 - P2/4 stream A
+  - [-4, 1, "Focus", [64, 3]]            # 3 - P1/2 stream B
+  - [-1, 1, "Conv", [128, 3, 2]]         # 4 - P2/4 stream B
+  - [-1, 3, "C3", [128]]                 # 5 - P2/4 stream B
+
+  # --- P2 fusion: USE Add2 (no BCAM) ---
+  - [[2,5], 1, "Add2", [128, 0]]         # 6 - P2/4 fuse (was BCAM in full model)
+
+  # stream continuation (use outputs from add2)
+  - [[2,6], 1, "Add2", [128,0]]          # 7 - stream one
+  - [[5,6], 1, "Add2", [128,1]]          # 8 - stream two
+
+  # Block two (P3/8)
+  - [7, 1, "Conv", [256, 3, 2]]          # 9 - downsample stream A -> P3
+  - [-1, 3, "C3", [256]]                 # 10 - stream A P3
+  - [8, 1, "Conv", [256, 3, 2]]          # 11 - downsample stream B -> P3
+  - [-1, 3, "C3", [256]]                 # 12 - stream B P3
+
+  # --- P3 fusion: KEEP BCAM HERE (single-scale BCAM) ---
+  - [[10,12], 1, "BCAM", [256]]          # 13 - P3 fusion (BCAM)  <-- only BCAM retained
+
+  # after BCAM, continue streams (use Add2 to reconstruct streams)
+  - [[10,13], 1, "Add2", [256, 0]]       # 14 - stream one (x + trans[0]) after BCAM
+  - [[12,13], 1, "Add2", [256, 1]]       # 15 - stream two after BCAM
+
+  # Block three (P4/16)  — use Add2 instead of BCAM
+  - [14, 1, "Conv", [512, 3, 2]]         # 16 - downsample stream A -> P4
+  - [-1, 3, "C3", [512]]                 # 17 - stream A P4
+  - [15, 1, "Conv", [512, 3, 2]]         # 18 - downsample stream B -> P4
+  - [-1, 3, "C3", [512]]                 # 19 - stream B P4
+
+  # --- P4 fusion: USE Add2 (no BCAM) ---
+  - [[17,19], 1, "Add2", [512, 0]]       # 20 - P4 fusion (no BCAM)
+  - [[17,20], 1, "Add2", [512, 0]]       # 21 - stream one after fusion
+  - [[19,20], 1, "Add2", [512, 1]]       # 22 - stream two after fusion
+
+  # Block four (P5/32) — use Add2 instead of BCAM
+  - [-2, 1, "Conv", [1024, 3, 2]]        # 23 - downsample stream A -> P5
+  - [-1, 1, "SPP", [1024, [5,9,13]]]     # 24
+  - [-1, 3, "C3", [1024, False]]         # 25
+  - [22, 1, "Conv", [1024, 3, 2]]        # 26 - downsample stream B -> P5
+  - [-1, 1, "SPP", [1024, [5,9,13]]]     # 27
+  - [-1, 3, "C3", [1024, False]]         # 28
+
+  # --- P5 fusion: USE Add2 (no BCAM) ---
+  - [[25,28], 1, "Add2", [1024, 0]]      # 29 - P5 fusion (no BCAM)
+  - [[25,29], 1, "Add2", [1024, 0]]      # 30 - stream one after fusion
+  - [[28,29], 1, "Add2", [1024, 1]]      # 31 - stream two after fusion
+
+  # Final backbone fuse into single tensor per scale
+  - [[14,15], 1, "Add", [1]]             # 32 - final P3 backbone
+  - [[21,22], 1, "Add", [1]]             # 33 - final P4 backbone
+  - [[30,31], 1, "Add", [1]]             # 34 - final P5 backbone
+
+
+# YOLOv5 head
+head:
+  [
+    [-1, 1, Conv, [512, 1, 1]],   # 35
+    [-1, 1, nn.Upsample, [None, 2, 'nearest']],   # 36
+    [[-1,33], 1, Concat, [1]],    # 37 cat backbone P4
+    [-1, 3, C3, [512, False]],    # 38
+
+    [-1, 1, Conv, [256, 1, 1]],   # 39
+    [-1, 1, nn.Upsample, [None, 2, 'nearest']],   # 40
+    [[-1,32], 1, Concat, [1]],    # 41 cat backbone P3
+    [-1, 3, C3, [256, False]],    # 42 (P3/8-small)
+
+    [-1, 1, Conv, [256, 3, 2]],   # 43
+    [[-1,39], 1, Concat, [1]],    # 44 cat head P4
+    [-1, 3, C3, [512, False]],    # 45 (P4/16-medium)
+
+    [-1, 1, Conv, [512, 3, 2]],    # 46
+    [[-1,35], 1, Concat, [1]],     # 47 cat head P5
+    [-1, 3, C3, [1024, False]],     # 48 (P5/32-large)
+
+    [[42, 45, 48], 1, Detect, [nc, anchors]],   # Detect(P3, P4, P5)
+  ]

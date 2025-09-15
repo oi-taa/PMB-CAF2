@@ -1,0 +1,10 @@
+path: ./dummy_data
+train_rgb: rgb/images
+train_ir: fir/images  
+val_rgb: rgb/images
+val_ir: fir/images
+test_rgb: rgb/images  
+test_ir: fir/images
+
+nc: 3
+names: ['person', 'car', 'car_stop']

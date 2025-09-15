@@ -1,0 +1,10 @@
+path: C:\Users\HN085WS\Downloads\cv_ppr\experiments\ir_det_3class_paired
+train_rgb: train/rgb/images
+train_ir: train/fir/images
+val_rgb: val/rgb/images  
+val_ir: val/fir/images
+test_rgb: val/rgb/images
+test_ir: val/fir/images
+
+nc: 3
+names: ['person', 'car', 'car_stop']
