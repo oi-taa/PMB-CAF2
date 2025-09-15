@@ -233,7 +233,9 @@ def test(data,
                                  "scores": {"class_score": conf},
                                  "domain": "pixel"} for *xyxy, conf, cls in pred.tolist()]
                     boxes = {"predictions": {"box_data": box_data, "class_labels": names}}  # inference-space
-                    wandb_images.append(wandb_logger.wandb.Image(img[si], boxes=boxes, caption=path.name))
+                    rgb_img = img[si][:3] if img[si].shape[0] > 3 else img[si]  # Take first 3 channels
+                    wandb_images.append(wandb_logger.wandb.Image(rgb_img, boxes=boxes, caption=path.name))
+                    
             wandb_logger.log_training_progress(predn, path, names) if wandb_logger and wandb_logger.wandb_run else None
 
             # Append to pycocotools JSON dictionary
