@@ -360,29 +360,86 @@ def train(hyp, opt, device, tb_writer=None):
         print(list(testloader.sampler))
 
 
-        # DDP process 0 or single-GPU
+        #  DDP process 0 or single-GPU
         if rank in [-1, 0]:
             # mAP
             ema.update_attr(model, include=['yaml', 'nc', 'hyp', 'gr', 'names', 'stride', 'class_weights'])
             final_epoch = epoch + 1 == epochs
             if not opt.notest or final_epoch:  # Calculate mAP
                 wandb_logger.current_epoch = epoch + 1
-                results, maps, times = test.test(data_dict,
-                                                 batch_size=batch_size * 2,
-                                                 imgsz=imgsz_test,
-                                                 model=ema.ema,
-                                                 single_cls=opt.single_cls,
-                                                 dataloader=testloader,
-                                                 save_dir=save_dir,
-                                                 verbose=nc < 50 and final_epoch,
-                                                 plots=plots and final_epoch,
-                                                 wandb_logger=wandb_logger,
-                                                 compute_loss=compute_loss,
-                                                 is_coco=is_coco)
+                
+                # Use enhanced test function for final epoch, regular for others
+                if final_epoch:
+                    results, maps, times = test.test_with_comprehensive_metrics(data_dict,
+                                            batch_size=batch_size * 2,
+                                            imgsz=imgsz_test,
+                                            model=ema.ema,
+                                            single_cls=opt.single_cls,
+                                            dataloader=testloader,
+                                            save_dir=save_dir,
+                                            verbose=nc < 50 and final_epoch,
+                                            plots=plots and final_epoch,
+                                            wandb_logger=wandb_logger,
+                                            compute_loss=compute_loss,
+                                            is_coco=is_coco)
+                else:
+                    # Regular test for intermediate epochs (faster)
+                    results, maps, times = test.test(data_dict,
+                                            batch_size=batch_size * 2,
+                                            imgsz=imgsz_test,
+                                            model=ema.ema,
+                                            single_cls=opt.single_cls,
+                                            dataloader=testloader,
+                                            save_dir=save_dir,
+                                            verbose=nc < 50 and final_epoch,
+                                            plots=plots and final_epoch,
+                                            wandb_logger=wandb_logger,
+                                            compute_loss=compute_loss,
+                                            is_coco=is_coco)
+                
+                # Save comprehensive metrics for final epoch
+                if final_epoch:
+                    # Safely extract metrics (handle both regular and enhanced results)
+                    enhanced_metrics = {
+                        'epoch': epoch,
+                        'mAP@0.5': float(results[2]) if len(results) > 2 else 0.0,
+                        'mAP@0.5:0.95': float(results[4]) if len(results) > 4 else 0.0,
+                        'mAP@0.75': float(results[3]) if len(results) > 3 else 0.0,
+                        'precision': float(results[0]) if len(results) > 0 else 0.0,
+                        'recall': float(results[1]) if len(results) > 1 else 0.0,
+                        'params_M': float(results[5]) if len(results) > 5 else 0.0,
+                        'gflops': float(results[6]) if len(results) > 6 else 0.0,
+                        'fps': float(results[7]) if len(results) > 7 else 0.0,
+                        'inference_time_ms': times[0] if len(times) > 0 else 0.0,
+                        'nms_time_ms': times[1] if len(times) > 1 else 0.0,
+                        'total_time_ms': times[2] if len(times) > 2 else 0.0
+                    }
+                    
+                    import json
+                    with open(save_dir / 'final_metrics.json', 'w') as f:
+                        json.dump(enhanced_metrics, f, indent=2)
+                    
+                    print(f"\n📊 Final comprehensive metrics saved to {save_dir / 'final_metrics.json'}")
+                    
+                    # Print summary table for paper
+                    print("\n" + "="*60)
+                    print("🎯 PUBLICATION READY RESULTS")
+                    print("="*60)
+                    print(f"Method: PMB-CAF | Classes: {nc} | Dataset: {Path(opt.data).stem}")
+                    print(f"mAP@0.5:      {enhanced_metrics['mAP@0.5']:.3f}")
+                    print(f"mAP@0.5:0.95: {enhanced_metrics['mAP@0.5:0.95']:.3f}")
+                    print(f"mAP@0.75:     {enhanced_metrics['mAP@0.75']:.3f}")
+                    print(f"Precision:    {enhanced_metrics['precision']:.3f}")
+                    print(f"Recall:       {enhanced_metrics['recall']:.3f}")
+                    print(f"Parameters:   {enhanced_metrics['params_M']:.2f}M")
+                    print(f"GFLOPs:       {enhanced_metrics['gflops']:.2f}")
+                    print(f"FPS:          {enhanced_metrics['fps']:.1f}")
+                    print("="*60)
 
-            # Write
+            # Write (use only the core results for the standard results file)
+            core_results = results[:8] if len(results) >= 8 else results  # Keep standard format
             with open(results_file, 'a') as f:
-                f.write(s + '%10.4g' * 8 % results + '\n')  # append metrics, val_loss
+                f.write(s + '%10.4g' * len(core_results) % core_results + '\n')  # append metrics, val_loss
             if len(opt.name) and opt.bucket:
                 os.system('gsutil cp %s gs://%s/results/results%s.txt' % (results_file, opt.bucket, opt.name))
 

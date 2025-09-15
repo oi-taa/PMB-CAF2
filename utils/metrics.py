@@ -223,3 +223,200 @@ def plot_mc_curve(px, py, save_dir='mc_curve.png', names=(), xlabel='Confidence'
     ax.set_ylim(0, 1)
     plt.legend(bbox_to_anchor=(1.04, 1), loc="upper left")
     fig.savefig(Path(save_dir), dpi=250)
+def ap_per_class_with_size_analysis(tp, conf, pred_cls, target_cls, target_areas, img_size=640, plot=False, save_dir='.', names=()):
+    """
+    Enhanced ap_per_class with size-based analysis
+    
+    Args:
+        target_areas: Array of target bounding box areas (normalized 0-1)
+        img_size: Image size for converting normalized areas to pixels
+    """
+    
+    # Convert normalized areas to pixel areas
+    pixel_areas = target_areas * (img_size ** 2)
+    
+    # Define size categories based on your dataset's distribution
+    area_percentiles = np.percentile(pixel_areas, [33, 67])
+    small_thresh, large_thresh = area_percentiles[0], area_percentiles[1]
+    
+    # Categorize targets
+    size_mask_small = pixel_areas < small_thresh
+    size_mask_medium = (pixel_areas >= small_thresh) & (pixel_areas < large_thresh)
+    size_mask_large = pixel_areas >= large_thresh
+    
+    # Compute AP for each size category
+    results = {}
+    
+    # Overall AP (existing function)
+    p_all, r_all, ap_all, f1_all, unique_classes = ap_per_class(
+        tp, conf, pred_cls, target_cls, plot, save_dir, names
+    )
+    
+    results['overall'] = {
+        'precision': p_all,
+        'recall': r_all, 
+        'ap': ap_all,
+        'f1': f1_all,
+        'classes': unique_classes
+    }
+    
+    # Size-specific AP
+    for size_name, size_mask in [('small', size_mask_small), 
+                                 ('medium', size_mask_medium), 
+                                 ('large', size_mask_large)]:
+        if size_mask.sum() > 0:  # Only if we have objects in this size category
+            # Filter targets by size
+            size_indices = np.where(size_mask)[0]
+            
+            # Create mask for predictions that match these targets
+            pred_mask = np.isin(np.arange(len(pred_cls)), size_indices)
+            
+            if pred_mask.sum() > 0:
+                p_size, r_size, ap_size, f1_size, _ = ap_per_class(
+                    tp[pred_mask], conf[pred_mask], pred_cls[pred_mask], 
+                    target_cls[size_indices], False, save_dir, names
+                )
+                
+                results[size_name] = {
+                    'precision': p_size,
+                    'recall': r_size,
+                    'ap': ap_size, 
+                    'f1': f1_size,
+                    'count': size_mask.sum()
+                }
+            else:
+                # No predictions for this size category
+                results[size_name] = {
+                    'precision': np.zeros_like(p_all),
+                    'recall': np.zeros_like(r_all),
+                    'ap': np.zeros_like(ap_all),
+                    'f1': np.zeros_like(f1_all),
+                    'count': size_mask.sum()
+                }
+    
+    return results
+
+def compute_efficiency_metrics(model, input_shape=(640, 640), device='cuda'):
+    """
+    Compute efficiency metrics: FPS, Params, GFLOPs
+    """
+    import time
+    from thop import profile
+    
+    # Parameter count
+    total_params = sum(p.numel() for p in model.parameters()) / 1e6  # Millions
+    
+    # Create dummy inputs 
+    rgb_input = torch.randn(1, 3, *input_shape).to(device)
+    thermal_input = torch.randn(1, 3, *input_shape).to(device)
+    
+    # GFLOPs calculation
+    try:
+        macs, _ = profile(model, inputs=(rgb_input, thermal_input), verbose=False)
+        gflops = macs / 1e9
+    except:
+        gflops = 0.0
+        print("Warning: GFLOPs calculation failed")
+    
+    # FPS calculation
+    model.eval()
+    with torch.no_grad():
+        # Warmup
+        for _ in range(10):
+            _ = model(rgb_input, thermal_input)
+        
+        # Timing
+        torch.cuda.synchronize()
+        start_time = time.time()
+        
+        num_runs = 100
+        for _ in range(num_runs):
+            _ = model(rgb_input, thermal_input)
+        
+        torch.cuda.synchronize()
+        end_time = time.time()
+        
+        avg_time = (end_time - start_time) / num_runs
+        fps = 1.0 / avg_time
+    
+    return {
+        'params_M': total_params,
+        'gflops': gflops, 
+        'fps': fps,
+        'inference_time_ms': avg_time * 1000
+    }
+
+def compute_fusion_analysis(rgb_results, thermal_results, fusion_results):
+    """
+    Analyze fusion benefits vs individual modalities
+    """
+    fusion_gain = {}
+    
+    # Extract mAP values (assuming results format from your test function)
+    rgb_map = rgb_results[2] if len(rgb_results) > 2 else 0  # mAP@0.5
+    thermal_map = thermal_results[2] if len(thermal_results) > 2 else 0
+    fusion_map = fusion_results[2] if len(fusion_results) > 2 else 0
+    
+    rgb_map95 = rgb_results[3] if len(rgb_results) > 3 else 0  # mAP@0.5:0.95  
+    thermal_map95 = thermal_results[3] if len(thermal_results) > 3 else 0
+    fusion_map95 = fusion_results[3] if len(fusion_results) > 3 else 0
+    
+    # Compute gains
+    fusion_gain['map50_gain'] = fusion_map - max(rgb_map, thermal_map)
+    fusion_gain['map50_95_gain'] = fusion_map95 - max(rgb_map95, thermal_map95)
+    
+    fusion_gain['rgb_map50'] = rgb_map
+    fusion_gain['thermal_map50'] = thermal_map
+    fusion_gain['fusion_map50'] = fusion_map
+    
+    fusion_gain['rgb_map50_95'] = rgb_map95
+    fusion_gain['thermal_map50_95'] = thermal_map95  
+    fusion_gain['fusion_map50_95'] = fusion_map95
+    
+    return fusion_gain
+
+def print_comprehensive_results(overall_results, size_results, efficiency_metrics, fusion_analysis, class_names):
+    """
+    Print results in publication-ready format
+    """
+    print("\n" + "="*80)
+    print("PMB-CAF Comprehensive Evaluation Results")
+    print("="*80)
+    
+    # Main performance table
+    print(f"\n📊 Overall Performance:")
+    print(f"  mAP@0.5:      {overall_results[2]:.3f}")
+    print(f"  mAP@0.5:0.95: {overall_results[3]:.3f}")  
+    print(f"  Precision:    {overall_results[0]:.3f}")
+    print(f"  Recall:       {overall_results[1]:.3f}")
+    
+    # Size-based analysis
+    print(f"\n📏 Performance by Object Size:")
+    for size in ['small', 'medium', 'large']:
+        if size in size_results:
+            ap50 = size_results[size]['ap'][:, 0].mean() if len(size_results[size]['ap']) > 0 else 0
+            ap95 = size_results[size]['ap'][:, 1].mean() if size_results[size]['ap'].shape[1] > 1 else 0
+            count = size_results[size]['count']
+            print(f"  {size.capitalize()} Objects: mAP@0.5={ap50:.3f}, mAP@0.5:0.95={ap95:.3f}, Count={count}")
+    
+    # Per-class results
+    print(f"\n🎯 Per-Class Performance:")
+    for i, class_name in enumerate(class_names):
+        if i < len(overall_results[0]):
+            print(f"  {class_name}: P={overall_results[0][i]:.3f}, R={overall_results[1][i]:.3f}")
+    
+    # Efficiency metrics  
+    print(f"\n⚡ Efficiency Metrics:")
+    print(f"  Parameters:   {efficiency_metrics['params_M']:.2f}M")
+    print(f"  GFLOPs:       {efficiency_metrics['gflops']:.2f}")
+    print(f"  FPS:          {efficiency_metrics['fps']:.1f}")
+    print(f"  Inference:    {efficiency_metrics['inference_time_ms']:.2f}ms")
+    
+    # Fusion analysis
+    print(f"\n🔥 Fusion Analysis:")
+    print(f"  RGB-only mAP@0.5:     {fusion_analysis['rgb_map50']:.3f}")
+    print(f"  Thermal-only mAP@0.5:  {fusion_analysis['thermal_map50']:.3f}")
+    print(f"  Fused mAP@0.5:        {fusion_analysis['fusion_map50']:.3f}")
+    print(f"  Fusion Gain:          +{fusion_analysis['map50_gain']:.3f}")
+    
+    print("="*80)

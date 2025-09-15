@@ -17,6 +17,73 @@ from utils.metrics import ap_per_class, ConfusionMatrix
 from utils.plots import plot_images, output_to_target, plot_study_txt
 from utils.torch_utils import select_device, time_synchronized
 
+def compute_efficiency_metrics(model, device, input_shape=(640, 640)):
+    """Compute FPS, Params, GFLOPs"""
+    import time
+    try:
+        from thop import profile
+    except ImportError:
+        print("Warning: thop not installed. Install with: pip install thop")
+        return {'params_M': 0, 'gflops': 0, 'fps': 0}
+    
+    # Parameter count
+    total_params = sum(p.numel() for p in model.parameters()) / 1e6
+    
+    # Create dummy inputs
+    rgb_input = torch.randn(1, 3, *input_shape).to(device)
+    thermal_input = torch.randn(1, 3, *input_shape).to(device)
+    
+    # GFLOPs
+    try:
+        macs, _ = profile(model, inputs=(rgb_input, thermal_input), verbose=False)
+        gflops = macs / 1e9
+    except:
+        gflops = 0.0
+    
+    # FPS measurement
+    model.eval()
+    with torch.no_grad():
+        # Warmup
+        for _ in range(10):
+            _ = model(rgb_input, thermal_input)
+        
+        if device.type != 'cpu':
+            torch.cuda.synchronize()
+        
+        # Timing
+        start_time = time.time()
+        num_runs = 50
+        for _ in range(num_runs):
+            _ = model(rgb_input, thermal_input)
+        
+        if device.type != 'cpu':
+            torch.cuda.synchronize()
+        
+        avg_time = (time.time() - start_time) / num_runs
+        fps = 1.0 / avg_time
+    
+    return {
+        'params_M': total_params,
+        'gflops': gflops,
+        'fps': fps,
+        'inference_time_ms': avg_time * 1000
+    }
+
+def analyze_size_performance(stats, targets_info):
+    """Analyze performance by object size using percentiles"""
+    if not stats or len(stats) < 4:
+        return {}
+    
+    # Extract areas from targets_info (you'll need to collect this during testing)
+    # For now, return placeholder - implement based on your target format
+    return {
+        'small_objects_ap50': 0.0,
+        'medium_objects_ap50': 0.0, 
+        'large_objects_ap50': 0.0,
+        'small_count': 0,
+        'medium_count': 0,
+        'large_count': 0
+    }
 
 def test(data,
          weights=None,
@@ -293,6 +360,60 @@ def test(data,
     for i, c in enumerate(ap_class):
         maps[c] = ap[i]
     return (mp, mr, map50, map75, map, *(loss.cpu() / len(dataloader)).tolist()), maps, t
+    
+def test_with_comprehensive_metrics(data, weights=None, **kwargs):
+    """Enhanced test function with comprehensive metrics"""
+    
+    # Run the original test function
+    results, maps, times = test(data, weights, **kwargs)
+    
+    # Get efficiency metrics if model is available
+    if kwargs.get('model') is not None:
+        model = kwargs['model']
+        device = next(model.parameters()).device
+        efficiency_metrics = compute_efficiency_metrics(model, device)
+        
+        # Print comprehensive results
+        print("\n" + "="*60)
+        print("📊 Comprehensive Evaluation Results")
+        print("="*60)
+        
+        # Main performance
+        mp, mr, map50, map75, map_avg = results[:5]
+        print(f"Overall Performance:")
+        print(f"  mAP@0.5:      {map50:.3f}")
+        print(f"  mAP@0.5:0.95: {map_avg:.3f}")
+        print(f"  mAP@0.75:     {map75:.3f}")
+        print(f"  Precision:    {mp:.3f}")
+        print(f"  Recall:       {mr:.3f}")
+        
+        # Efficiency metrics
+        print(f"\nEfficiency Metrics:")
+        print(f"  Parameters:   {efficiency_metrics['params_M']:.2f}M")
+        print(f"  GFLOPs:       {efficiency_metrics['gflops']:.2f}")
+        print(f"  FPS:          {efficiency_metrics['fps']:.1f}")
+        print(f"  Inference:    {efficiency_metrics['inference_time_ms']:.2f}ms")
+        
+        # Speed breakdown
+        inf_time, nms_time, total_time = times[:3]
+        print(f"\nSpeed Breakdown:")
+        print(f"  Inference:    {inf_time:.1f}ms")
+        print(f"  NMS:          {nms_time:.1f}ms") 
+        print(f"  Total:        {total_time:.1f}ms")
+        
+        print("="*60)
+        
+        # Add efficiency metrics to results tuple
+        enhanced_results = results + (efficiency_metrics['params_M'], 
+                                    efficiency_metrics['gflops'], 
+                                    efficiency_metrics['fps'])
+        return enhanced_results, maps, times
+    else:
+        # No model available, return original results
+        print("⚠️  Model not available for efficiency metrics")
+        return results, maps, times
+    
+    return results, maps, times
 
 
 if __name__ == '__main__':
