@@ -69,21 +69,7 @@ def compute_efficiency_metrics(model, device, input_shape=(640, 640)):
         'inference_time_ms': avg_time * 1000
     }
 
-def analyze_size_performance(stats, targets_info):
-    """Analyze performance by object size using percentiles"""
-    if not stats or len(stats) < 4:
-        return {}
-    
-    # Extract areas from targets_info (you'll need to collect this during testing)
-    # For now, return placeholder - implement based on your target format
-    return {
-        'small_objects_ap50': 0.0,
-        'medium_objects_ap50': 0.0, 
-        'large_objects_ap50': 0.0,
-        'small_count': 0,
-        'medium_count': 0,
-        'large_count': 0
-    }
+
 
 def test(data,
          weights=None,
@@ -109,9 +95,10 @@ def test(data,
          opt=None):
     # Initialize/load model and set device
     training = model is not None
+    
     if training:  # called by train.py
         device = next(model.parameters()).device  # get model device
-
+    
     else:  # called directly
         set_logging()
         device = select_device(opt.device, batch_size=batch_size)
@@ -161,6 +148,7 @@ def test(data,
                                        prefix=colorstr(f'{task}: '))[0]
 
     seen = 0
+    all_target_areas = [] 
     confusion_matrix = ConfusionMatrix(nc=nc)
     names = {k: v for k, v in enumerate(model.names if hasattr(model, 'names') else model.module.names)}
     coco91class = coco80_to_coco91_class()
@@ -175,6 +163,12 @@ def test(data,
         img /= 255.0  # 0 - 255 to 0.0 - 1.0
         targets = targets.to(device)
         nb, _, height, width = img.shape  # batch size, channels, height, width
+        if len(targets) > 0:
+            # Convert target format [batch_idx, class, x_center, y_center, width, height] to areas
+            target_widths = targets[:, 4] * width  # denormalize width
+            target_heights = targets[:, 5] * height  # denormalize height  
+            target_areas = target_widths * target_heights
+            all_target_areas.extend(target_areas.cpu().numpy())
 
         img_rgb = img[:, :3, :, :]
         img_ir = img[:, 3:, :, :]
@@ -292,7 +286,7 @@ def test(data,
             Thread(target=plot_images, args=(img, targets, paths, f, names), daemon=True).start()
             f = save_dir / f'test_batch{batch_i}_pred.jpg'  # predictions
             Thread(target=plot_images, args=(img, output_to_target(out), paths, f, names), daemon=True).start()
-
+    
     # Compute statistics
     stats = [np.concatenate(x, 0) for x in zip(*stats)]  # to numpy
     if len(stats) and stats[0].any():
@@ -303,7 +297,8 @@ def test(data,
         nt = np.bincount(stats[3].astype(np.int64), minlength=nc)  # number of targets per class
     else:
         nt = torch.zeros(1)
-
+    targets_info = {'areas': all_target_areas}
+    size_metrics = compute_size_based_metrics(stats, targets_info, imgsz)
     # Print results
     pf = '%20s' + '%12i' * 2 + '%12.3g' * 5  # print format
     print(pf % ('all', seen, nt.sum(), mp, mr, map50, map75, map))
@@ -361,10 +356,49 @@ def test(data,
     maps = np.zeros(nc) + map
     for i, c in enumerate(ap_class):
         maps[c] = ap[i]
-    return (mp, mr, map50, map75, map, *(loss.cpu() / len(dataloader)).tolist()), maps, t
+    return (mp, mr, map50, map75, map, *(loss.cpu() / len(dataloader)).tolist()), maps, t, size_metrics
+
+def print_publication_ready_results(results, size_metrics, efficiency_metrics, dataset_name, method_name="PMB-CAF"):
+    """Print results in publication-ready format"""
+    
+    print("\n" + "="*80)
+    print(f"🎯 {method_name} - {dataset_name} Results")
+    print("="*80)
+    
+    # Main metrics table
+    mp, mr, map50, map75, map_avg = results[:5]
+    
+    print(f"\n📊 Detection Performance:")
+    print(f"  mAP@50:       {map50:.3f}")
+    print(f"  mAP@75:       {map75:.3f}")  
+    print(f"  mAP@[0.5:0.95]: {map_avg:.3f}")
+    print(f"  Precision:    {mp:.3f}")
+    print(f"  Recall:       {mr:.3f}")
+    
+    # Size-based metrics
+    print(f"\n📏 Size-based Performance:")
+    print(f"  mAP_small:    {size_metrics.get('mAP_small', 0.0):.3f} ({size_metrics.get('small_count', 0)} objects)")
+    print(f"  mAP_medium:   {size_metrics.get('mAP_medium', 0.0):.3f} ({size_metrics.get('medium_count', 0)} objects)")
+    print(f"  mAP_large:    {size_metrics.get('mAP_large', 0.0):.3f} ({size_metrics.get('large_count', 0)} objects)")
+    
+    # Efficiency metrics
+    print(f"\n⚡ Efficiency:")
+    print(f"  Params:       {efficiency_metrics.get('params_M', 0.0):.2f}M")
+    print(f"  GFLOPs:       {efficiency_metrics.get('gflops', 0.0):.2f}")
+    print(f"  FPS:          {efficiency_metrics.get('fps', 0.0):.1f}")
+    
+    # Summary table for paper
+    print(f"\n📋 Summary Table (for paper):")
+    print(f"Method: {method_name}")
+    print(f"Dataset: {dataset_name}")
+    print(f"mAP@50: {map50:.3f} | mAP@75: {map75:.3f} | mAP@[0.5:0.95]: {map_avg:.3f}")
+    print(f"mAP_S: {size_metrics.get('mAP_small', 0.0):.3f} | mAP_M: {size_metrics.get('mAP_medium', 0.0):.3f} | mAP_L: {size_metrics.get('mAP_large', 0.0):.3f}")
+    print(f"Params: {efficiency_metrics.get('params_M', 0.0):.2f}M | GFLOPs: {efficiency_metrics.get('gflops', 0.0):.2f} | FPS: {efficiency_metrics.get('fps', 0.0):.1f}")
+    
+    print("="*80)
     
 def test_with_comprehensive_metrics(data, weights=None, **kwargs):
-    """Enhanced test function with comprehensive metrics"""
+    """Enhanced test function with comprehensive metrics including size-based mAP"""
     
     # Run the original test function
     results, maps, times = test(data, weights, **kwargs)
@@ -405,17 +439,118 @@ def test_with_comprehensive_metrics(data, weights=None, **kwargs):
         
         print("="*60)
         
-        # Add efficiency metrics to results tuple
-        enhanced_results = results + (efficiency_metrics['params_M'], 
-                                    efficiency_metrics['gflops'], 
-                                    efficiency_metrics['fps'])
-        return enhanced_results, maps, times
+        # Create comprehensive metrics dictionary
+        comprehensive_metrics = {
+            'mAP@50': float(map50),
+            'mAP@75': float(map75), 
+            'mAP@[0.5:0.95]': float(map_avg),
+            'precision': float(mp),
+            'recall': float(mr),
+            'params_M': efficiency_metrics['params_M'],
+            'gflops': efficiency_metrics['gflops'],
+            'fps': efficiency_metrics['fps'],
+            'inference_time_ms': efficiency_metrics['inference_time_ms'],
+            'nms_time_ms': inf_time,
+            'total_time_ms': total_time
+        }
+        
+        return results, maps, times, comprehensive_metrics
     else:
-        # No model available, return original results
         print("⚠️  Model not available for efficiency metrics")
-        return results, maps, times
+        return results, maps, times, {}
+
+def compute_size_based_metrics(stats, targets_info, img_size=640):
+    """
+    Compute mAP for different object sizes
     
-    return results, maps, times
+    Args:
+        stats: Statistics from test function [correct, conf, pcls, tcls]
+        targets_info: Dictionary with target information including areas
+        img_size: Image size for area calculations
+    
+    Returns:
+        Dictionary with size-based metrics
+    """
+    if not stats or len(stats) < 4:
+        return {
+            'mAP_small': 0.0,
+            'mAP_medium': 0.0,
+            'mAP_large': 0.0,
+            'small_count': 0,
+            'medium_count': 0,
+            'large_count': 0
+        }
+    
+    # Extract areas from target information
+    # You'll need to collect this during testing - see modification below
+    target_areas = targets_info.get('areas', [])
+    
+    if len(target_areas) == 0:
+        return {
+            'mAP_small': 0.0,
+            'mAP_medium': 0.0, 
+            'mAP_large': 0.0,
+            'small_count': 0,
+            'medium_count': 0,
+            'large_count': 0
+        }
+    
+    # Convert to pixel areas
+    pixel_areas = np.array(target_areas) * (img_size ** 2)
+    
+    # Define size thresholds (COCO-style)
+    # Small: area < 32^2, Medium: 32^2 < area < 96^2, Large: area > 96^2
+    small_thresh = 32 ** 2
+    large_thresh = 96 ** 2
+    
+    # Categorize by size
+    small_mask = pixel_areas < small_thresh
+    medium_mask = (pixel_areas >= small_thresh) & (pixel_areas < large_thresh)
+    large_mask = pixel_areas >= large_thresh
+    
+    # Compute AP for each size category
+    from utils.metrics import ap_per_class
+    
+    # Unpack stats
+    tp, conf, pred_cls, target_cls = [np.concatenate(x, 0) for x in zip(*stats)]
+    
+    size_metrics = {}
+    
+    for size_name, size_mask in [('small', small_mask), ('medium', medium_mask), ('large', large_mask)]:
+        count = size_mask.sum()
+        
+        if count > 0:
+            # Filter targets and predictions for this size
+            size_indices = np.where(size_mask)[0]
+            
+            # Create prediction mask for targets in this size category
+            pred_mask = np.zeros(len(pred_cls), dtype=bool)
+            for idx in size_indices:
+                if idx < len(pred_mask):
+                    pred_mask[idx] = True
+            
+            if pred_mask.sum() > 0:
+                try:
+                    p_size, r_size, ap_size, f1_size, _ = ap_per_class(
+                        tp[pred_mask], conf[pred_mask], pred_cls[pred_mask], 
+                        target_cls[size_indices], plot=False
+                    )
+                    
+                    # Extract mAP@0.5 (first column of ap)
+                    map50_size = ap_size[:, 0].mean() if len(ap_size) > 0 else 0.0
+                    size_metrics[f'mAP_{size_name}'] = float(map50_size)
+                    
+                except Exception as e:
+                    print(f"Warning: Could not compute {size_name} mAP: {e}")
+                    size_metrics[f'mAP_{size_name}'] = 0.0
+            else:
+                size_metrics[f'mAP_{size_name}'] = 0.0
+        else:
+            size_metrics[f'mAP_{size_name}'] = 0.0
+        
+        size_metrics[f'{size_name}_count'] = int(count)
+    
+    return size_metrics
 
 
 if __name__ == '__main__':

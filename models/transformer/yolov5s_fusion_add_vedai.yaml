@@ -5,9 +5,9 @@ width_multiple: 0.50  # layer channel multiple
 
 # anchors
 anchors:
-  - [10,13, 16,30, 33,23]  # P3/8
-  - [30,61, 62,45, 59,119]  # P4/16
-  - [116,90, 156,198, 373,326]  # P5/32
+  - [14,30, 34,63, 41,125]      # P3/8 - Small objects (distant people)
+  - [112,88, 75,223, 216,181]   # P4/16 - Medium objects (cars, close people)  
+  - [117,373, 176,574, 344,321] # P5/32 - Large objects (close cars, full-height objects)
 
 # YOLOv5 backbone
 backbone:
