@@ -870,90 +870,72 @@ def train_rgb_ir(hyp, opt, device, tb_writer=None):
             if not opt.notest or final_epoch:  # Calculate mAP
                 wandb_logger.current_epoch = epoch + 1
                 
-                if final_epoch:
-                    # Use enhanced test function for final epoch
-                    results, maps, times, size_metrics = test(data_dict,
-                                            batch_size=batch_size * 2,
-                                            imgsz=imgsz_test,
-                                            model=ema.ema,
-                                            single_cls=opt.single_cls,
-                                            dataloader=testloader,
-                                            save_dir=save_dir,
-                                            verbose=nc < 50 and final_epoch,
-                                            plots=plots and final_epoch,
-                                            wandb_logger=wandb_logger,
-                                            compute_loss=compute_loss,
-                                            is_coco=is_coco,
-                                            opt=opt)
-                    
-                    # Compute efficiency metrics
-                    efficiency_metrics = compute_efficiency_metrics(ema.ema, device)
-                    
-                    # Print comprehensive results
-                    dataset_name = Path(opt.data).stem
-                    print_publication_ready_results(results, size_metrics, efficiency_metrics, dataset_name)
-                    
-                    # Save comprehensive metrics
-                    comprehensive_metrics = {
-                        'epoch': epoch,
-                        'dataset': dataset_name,
-                        'method': 'PMB-CAF',
+                try:
+                    if final_epoch:
+                        # Use safe test function for final epoch with comprehensive metrics
+                        results, maps, times, size_metrics, efficiency_metrics = safe_test_with_metrics(
+                            data_dict,
+                            batch_size=batch_size * 2,
+                            imgsz=imgsz_test,
+                            model=ema.ema,
+                            single_cls=opt.single_cls,
+                            dataloader=testloader,
+                            save_dir=save_dir,
+                            verbose=nc < 50 and final_epoch,
+                            plots=plots and final_epoch,
+                            wandb_logger=wandb_logger,
+                            compute_loss=compute_loss,
+                            is_coco=is_coco
+                        )
                         
-                        # Main metrics
-                        'mAP@50': float(results[2]),
-                        'mAP@75': float(results[3]),
-                        'mAP@[0.5:0.95]': float(results[4]),
-                        'precision': float(results[0]),
-                        'recall': float(results[1]),
-                        
-                        # Size-based metrics
-                        'mAP_small': size_metrics.get('mAP_small', 0.0),
-                        'mAP_medium': size_metrics.get('mAP_medium', 0.0),
-                        'mAP_large': size_metrics.get('mAP_large', 0.0),
-                        'small_count': size_metrics.get('small_count', 0),
-                        'medium_count': size_metrics.get('medium_count', 0),
-                        'large_count': size_metrics.get('large_count', 0),
-                        
-                        # Efficiency metrics
-                        'params_M': efficiency_metrics['params_M'],
-                        'gflops': efficiency_metrics['gflops'],
-                        'fps': efficiency_metrics['fps'],
-                        'inference_time_ms': efficiency_metrics['inference_time_ms'],
-                        
-                        # Speed breakdown
-                        'nms_time_ms': times[1],
-                        'total_time_ms': times[2]
-                    }
-                    
-                    # Save to JSON for easy parsing
-                    import json
-                    with open(save_dir / 'comprehensive_metrics.json', 'w') as f:
-                        json.dump(comprehensive_metrics, f, indent=2)
-                    
-                    # Save to CSV for tables
-                    import pandas as pd
-                    df = pd.DataFrame([comprehensive_metrics])
-                    df.to_csv(save_dir / 'results_table.csv', index=False)
-                    
-                    print(f"\n📊 Comprehensive metrics saved to:")
-                    print(f"  JSON: {save_dir / 'comprehensive_metrics.json'}")
-                    print(f"  CSV:  {save_dir / 'results_table.csv'}")
-                    
-                else:
-                    # Regular test for intermediate epochs (faster)
-                    results, maps, times = test.test(data_dict,
-                                            batch_size=batch_size * 2,
-                                            imgsz=imgsz_test,
-                                            model=ema.ema,
-                                            single_cls=opt.single_cls,
-                                            dataloader=testloader,
-                                            save_dir=save_dir,
-                                            verbose=nc < 50 and final_epoch,
-                                            plots=plots and final_epoch,
-                                            wandb_logger=wandb_logger,
-                                            compute_loss=compute_loss,
-                                            is_coco=is_coco)
-                    size_metrics = {}
+                        # Save comprehensive metrics for final epoch
+                        try:
+                            import json
+                            comprehensive_metrics = {
+                                'epoch': epoch,
+                                'dataset': Path(opt.data).stem,
+                                'method': 'PMB-CAF',
+                                'mAP@50': float(results[2]) if len(results) > 2 else 0.0,
+                                'mAP@75': float(results[3]) if len(results) > 3 else 0.0,
+                                'mAP@[0.5:0.95]': float(results[4]) if len(results) > 4 else 0.0,
+                                'precision': float(results[0]) if len(results) > 0 else 0.0,
+                                'recall': float(results[1]) if len(results) > 1 else 0.0,
+                                **size_metrics,
+                                **efficiency_metrics
+                            }
+                            
+                            with open(save_dir / 'final_metrics.json', 'w') as f:
+                                json.dump(comprehensive_metrics, f, indent=2)
+                            
+                            print(f"\n📊 Final metrics saved to {save_dir / 'final_metrics.json'}")
+                            
+                        except Exception as e:
+                            print(f"Warning: Could not save comprehensive metrics: {e}")
+                            
+                    else:
+                        # Regular test for intermediate epochs
+                        results, maps, times = test.test(data_dict,
+                                                batch_size=batch_size * 2,
+                                                imgsz=imgsz_test,
+                                                model=ema.ema,
+                                                single_cls=opt.single_cls,
+                                                dataloader=testloader,
+                                                save_dir=save_dir,
+                                                verbose=nc < 50 and final_epoch,
+                                                plots=plots and final_epoch,
+                                                wandb_logger=wandb_logger,
+                                                compute_loss=compute_loss,
+                                                is_coco=is_coco)
+                                                
+                except Exception as e:
+                    print(f"Warning: Testing failed: {e}")
+                    # Use default results to continue training
+                    results = (0., 0., 0., 0., 0., 0., 0., 0.)
+
+            # Write results (use only the core results)
+            core_results = results[:8] if len(results) >= 8 else results
+            with open(results_file, 'a') as f:
+                f.write(s + '%10.4g' * len(core_results) % core_results + '\n')
 
             # Write
             with open(results_file, 'a') as f:
