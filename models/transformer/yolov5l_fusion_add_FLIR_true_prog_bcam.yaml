@@ -44,13 +44,14 @@ backbone:
 
     ######### Progressive BCAM Fusion Chain #############
     # P5: Basic BCAM (establishes coarse context)
-    [[9,19], 1, BCAM_SingleOutput, [1024]],                    # 20: P5 basic fusion (1024 channels)
-    
-    # P4: Progressive BCAM (uses P5 coarse context)
-    [[6,16], 1, BCAM_Progressive, [512, 1024]],                # 21: P4 progressive fusion (512 channels, 1024 coarse)
-    
-    # P3: Progressive BCAM (uses P4 coarse context)  
-    [[4,14], 1, BCAM_Progressive, [256, 512]],                 # 22: P3 progressive fusion (256 channels, 512 coarse)
+    # P5: Basic BCAM (establishes coarse context)
+    [[9,19], 1, BCAM_SingleOutput, [1024]],        # 20: P5 fusion
+
+    # P4: Progressive BCAM (uses P5 coarse context) 
+    [[6,16,20], 1, BCAM_Progressive, [512]],        # 21: P4 + P5 context
+
+    # P3: Progressive BCAM (uses P4 coarse context)
+    [[4,14,21], 1, BCAM_Progressive, [256]],        # 22: P3 + P4 context       # 22: P3 progressive fusion (256 channels, 512 coarse)
   ]
 
 # YOLOv5 head - Modified for progressive fusion outputs
