@@ -1,14 +1,16 @@
+import os
+os.environ['WANDB_DISABLED'] = 'true'
 import argparse
 import logging
 import math
-import os
+
 import random
 import time
 from copy import deepcopy
 from pathlib import Path
 from threading import Thread
 
-os.environ['WANDB_DISABLED'] = 'true'
+
 import numpy as np
 import torch.distributed as dist
 import torch.nn as nn
