@@ -294,10 +294,7 @@ class Model(nn.Module):
         
         i = 0
         # Before the BCAM_Progressive section, add:
-        if i == 21:  # Layer 21 is your first BCAM_Progressive
-            print(f"\nDebug saved outputs for layer 21:")
-            print(f"  y[6] = {y[6].shape if y[6] is not None else None}")
-            print(f"  y[16] = {y[16].shape if y[16] is not None else None}")
+        
         for m in self.model:
             # Handle input routing (existing logic)
             if m.f != -1:
@@ -316,8 +313,15 @@ class Model(nn.Module):
 
             # === PMB-CAF Progressive Orchestration ===
             if isinstance(m, BCAM_Progressive):
+                # Determine input channels and scale
+                if isinstance(x, (tuple, list)):
+                    input_channels = x[0].shape[1]
+                else:
+                    input_channels = x.shape[1]
                 
+                scale = self.get_module_scale(input_channels)
                 
+                # Determine required coarse context
                 if scale == 'P4':
                     coarse_context = fused_contexts.get('P5')
                     expected_coarse = 1024  # From P5
@@ -325,19 +329,20 @@ class Model(nn.Module):
                         raise RuntimeError(f"P4 BCAM_Progressive at layer {i} missing P5 context")
                 elif scale == 'P3':
                     coarse_context = fused_contexts.get('P4')
-                    expected_coarse = 512 
+                    expected_coarse = 512
                     if coarse_context is None:
                         raise RuntimeError(f"P3 BCAM_Progressive at layer {i} missing P4 context")
                 else:
                     raise RuntimeError(f"BCAM_Progressive not supported at scale {scale}")
-                 # Validation (now coarse_context is defined)
+                
+                # Validation (now coarse_context is defined)
                 if coarse_context.shape[1] != expected_coarse:
                     raise RuntimeError(f"Scale {scale} expects {expected_coarse} coarse channels, got {coarse_context.shape[1]}")
-
+                
                 # Get positional embeddings for current scale
                 pos_rgb = self.pos_embs[scale]['rgb']
                 pos_thermal = self.pos_embs[scale]['thermal']
-
+                
                 # Progressive fusion with external pos control
                 x = m(x, coarse_context=coarse_context, pos_rgb=pos_rgb, pos_thermal=pos_thermal)
                 
