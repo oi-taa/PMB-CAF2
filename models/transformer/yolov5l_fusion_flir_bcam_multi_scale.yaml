@@ -38,7 +38,7 @@ backbone:
     [-1, 3, C3, [1024, False]],     # 19
 
     ######### Multi-Scale BCAM (Fused Outputs Only) #############
-    [[2,12], 1, BCAM_SingleOutput, [128]],   # 20: P2 fused
+    
     [[4,14], 1, BCAM_SingleOutput, [256]],   # 21: P3 fused  
     [[6,16], 1, BCAM_SingleOutput, [512]],   # 22: P4 fused
     [[9,19], 1, BCAM_SingleOutput, [1024]],  # 23: P5 fused
