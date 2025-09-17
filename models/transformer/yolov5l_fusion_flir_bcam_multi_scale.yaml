@@ -66,5 +66,5 @@ head:
     [[-1,24], 1, Concat, [1]],              # 36: Cat with P5
     [-1, 3, C3, [1024, False]],             # 37: P5 final
 
-    [[31, 34, 37], 1, Detect, [nc, anchors]], # Detection
+    [[31, 34, -1], 1, Detect, [nc, anchors]], # Detection
   ]
