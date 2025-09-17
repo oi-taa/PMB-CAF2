@@ -335,9 +335,7 @@ class Model(nn.Module):
                 else:
                     raise RuntimeError(f"BCAM_Progressive not supported at scale {scale}")
                 
-                # Validation (now coarse_context is defined)
-                if coarse_context.shape[1] != expected_coarse:
-                    raise RuntimeError(f"Scale {scale} expects {expected_coarse} coarse channels, got {coarse_context.shape[1]}")
+                
                 
                 # Get positional embeddings for current scale
                 pos_rgb = self.pos_embs[scale]['rgb']
@@ -428,13 +426,7 @@ class Model(nn.Module):
                     x = m(x2)  # Thermal stream
                 else:
                     x = m(x)   # RGB stream or other
-            # In models/yolo_test.py, in forward_once() method, add after BCAM modules:
-            if isinstance(m, (BCAM, BCAM_Progressive, BCAM_SingleOutput)):
-                print(f"Layer {i}: {type(m).__name__}")
-                if isinstance(x, tuple):
-                    print(f"  Input: RGB={x[0].shape}, Thermal={x[1].shape}")
-                else:
-                    print(f"  Output: {x.shape}")
+           
             y.append(x if m.i in self.save else None)
             i += 1
 
