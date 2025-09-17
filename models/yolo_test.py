@@ -632,8 +632,138 @@ class Model(nn.Module):
 #
 #     def info(self, verbose=False, img_size=640):  # print model information
 #         model_info(self, verbose, img_size)
+def parse_model(d, ch):  # model_dict, input_channels(3)
+    logger.info('\n%3s%18s%3s%10s  %-40s%-30s' % ('', 'from', 'n', 'params', 'module', 'arguments'))
+    anchors, nc, gd, gw = d['anchors'], d['nc'], d['depth_multiple'], d['width_multiple']
+    na = (len(anchors[0]) // 2) if isinstance(anchors, list) else anchors  # number of anchors
+    no = na * (nc + 5)  # number of outputs = anchors * (classes + 5)
 
+    layers, save, c2 = [], [], ch[-1]  # layers, savelist, ch out
+    print(f"DEBUG: Initial ch = {ch}")
+    
+    for i, (f, n, m, args) in enumerate(d['backbone'] + d['head']):  # from, number, module, args
+        print(f"\nDEBUG: Layer {i}: f={f}, n={n}, m={m}, args={args}")
+        print(f"DEBUG: Current ch length = {len(ch)}, ch = {ch}")
+        
+        m = eval(m) if isinstance(m, str) else m  # eval strings
+        for j, a in enumerate(args):
+            try:
+                args[j] = eval(a) if isinstance(a, str) else a  # eval strings
+            except:
+                pass
 
+        n = max(round(n * gd), 1) if n > 1 else n  # depth gain
+        
+        if m in [Conv, GhostConv, Bottleneck, GhostBottleneck, SPP, DWConv, MixConv2d, Focus, CrossConv, BottleneckCSP,
+                 C3, C3TR]:
+
+            if m is Focus:
+                c1, c2 = 3, args[0]
+                print(f"DEBUG: Focus - c1={c1}, c2={c2}")
+                if c2 != no:  # if not output
+                    c2 = make_divisible(c2 * gw, 8)
+                args = [c1, c2, *args[1:]]
+            else:
+                print(f"DEBUG: Non-Focus module, trying to access ch[{f}]")
+                if isinstance(f, list):
+                    print(f"DEBUG: f is list {f}, using f[0]={f[0]}")
+                    if f[0] >= len(ch):
+                        print(f"ERROR: f[0]={f[0]} >= len(ch)={len(ch)}")
+                    f_idx = f[0]
+                else:
+                    f_idx = f
+                    
+                if f_idx >= len(ch):
+                    print(f"ERROR: Trying to access ch[{f_idx}] but ch length is {len(ch)}")
+                    print(f"ERROR: ch = {ch}")
+                    raise IndexError(f"Index {f_idx} out of range for ch list of length {len(ch)}")
+                    
+                c1, c2 = ch[f_idx], args[0]
+                print(f"DEBUG: c1={c1} (from ch[{f_idx}]), c2={c2}")
+                if c2 != no:  # if not output
+                    c2 = make_divisible(c2 * gw, 8)
+
+                args = [c1, c2, *args[1:]]
+                if m in [BottleneckCSP, C3, C3TR]:
+                    args.insert(2, n)  # number of repeats
+                    n = 1
+        elif m is nn.BatchNorm2d:
+            args = [ch[f]]
+        elif m is Add:
+            print(f"DEBUG: Add module with f={f}")
+            c2 = ch[f[0]]
+            args = [c2]
+        elif m is Add2:
+            print(f"DEBUG: Add2 module with f={f}")
+            c2 = ch[f[0]]
+            args = [c2, args[1]]
+        elif m is GPT:
+            print(f"DEBUG: GPT module with f={f}")
+            c2 = ch[f[0]]
+            args = [c2]
+        elif m is BCAM:
+            print(f"DEBUG: BCAM module with f={f}")
+            c2 = ch[f[0]]
+            args = [c2] + args[1:] if len(args) > 1 else [c2]
+        elif m is BCAM_SingleOutput:
+            print(f"DEBUG: BCAM_SingleOutput module with f={f}")
+            print(f"DEBUG: Trying to access ch[{f[0]}], ch length = {len(ch)}")
+            if f[0] >= len(ch):
+                print(f"ERROR: f[0]={f[0]} >= len(ch)={len(ch)} for BCAM_SingleOutput")
+                print(f"ERROR: ch = {ch}")
+            c2 = ch[f[0]]
+            m_ = BCAM_SingleOutput(c2, output_mode='fused', *args[1:])
+        elif m is UCAM:
+            print(f"DEBUG: UCAM module with f={f}")
+            c2 = ch[f[0]]
+            m_ = m(c2, *args[1:])
+            # Disable internal pos - will use external pos from orchestration
+            m_.rgb_pos_embed = None
+            m_.thermal_pos_embed = None
+        elif m is BCAM_Progressive:
+            print(f"DEBUG: BCAM_Progressive module with f={f}")
+            c2 = ch[f[0]]
+            if len(args) >= 2:
+                d_model, coarse_channels = args[0], args[1] 
+                args = [d_model, 4, 0.1, 8, 8, coarse_channels]
+            m_ = m(*args)
+            # Disable internal pos - will use external pos from orchestration  
+            m_.rgb_pos_embed = None
+            m_.thermal_pos_embed = None
+        elif m is Concat:
+            c2 = sum([ch[x] for x in f])
+            print(f"DEBUG: Concat with f={f}, c2={c2}")
+        elif m is Detect:
+            args.append([ch[x] for x in f])
+            if isinstance(args[1], int):  # number of anchors
+                args[1] = [list(range(args[1] * 2))] * len(f)
+        elif m is Contract:
+            c2 = ch[f] * args[0] ** 2
+        elif m is Expand:
+            c2 = ch[f] // args[0] ** 2
+        else:
+            print(f"DEBUG: Unknown module type {m}, f={f}")
+            c2 = ch[f]
+
+        if 'm_' not in locals():
+            m_ = nn.Sequential(*[m(*args) for _ in range(n)]) if n > 1 else m(*args)  # module
+            
+        t = str(m)[8:-2].replace('__main__.', '')  # module type
+        np = sum([x.numel() for x in m_.parameters()])  # number params
+        m_.i, m_.f, m_.type, m_.np = i, f, t, np  # attach index, 'from' index, type, number params
+        logger.info('%3s%18s%3s%10.0f  %-40s%-30s' % (i, f, n, np, t, args))  # print
+        save.extend(x % i for x in ([f] if isinstance(f, int) else f) if x != -1)  # append to savelist
+        layers.append(m_)
+        if i == 0:
+            ch = []
+        ch.append(c2)
+        print(f"DEBUG: After layer {i}, ch = {ch}")
+        
+        # Clear m_ for next iteration
+        if 'm_' in locals():
+            del m_
+    return nn.Sequential(*layers), sorted(save)
+'''
 def parse_model(d, ch):  # model_dict, input_channels(3)
     logger.info('\n%3s%18s%3s%10s  %-40s%-30s' % ('', 'from', 'n', 'params', 'module', 'arguments'))
     anchors, nc, gd, gw = d['anchors'], d['nc'], d['depth_multiple'], d['width_multiple']
@@ -732,7 +862,7 @@ def parse_model(d, ch):  # model_dict, input_channels(3)
         ch.append(c2)
     # print(layers)
     return nn.Sequential(*layers), sorted(save)
-
+'''
 
 def parse_model_rgb_ir(d, ch):  # model_dict, input_channels(3)
     logger.info('\n%3s%18s%3s%10s  %-40s%-30s' % ('', 'from', 'n', 'params', 'module', 'arguments'))
