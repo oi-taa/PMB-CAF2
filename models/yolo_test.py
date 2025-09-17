@@ -234,13 +234,13 @@ class Model(nn.Module):
         
     def _init_positional_embeddings(self):
         """Initialize central positional embeddings for all scales and modalities"""
-        # Account for width_multiple = 0.5
-        self.pos_P5_rgb = nn.Parameter(torch.randn(1, 512, 8, 8) * 0.02)      # Was 1024
-        self.pos_P5_thermal = nn.Parameter(torch.randn(1, 512, 8, 8) * 0.02)  # Was 1024
-        self.pos_P4_rgb = nn.Parameter(torch.randn(1, 256, 8, 8) * 0.02)      # Was 512
-        self.pos_P4_thermal = nn.Parameter(torch.randn(1, 256, 8, 8) * 0.02)  # Was 512
-        self.pos_P3_rgb = nn.Parameter(torch.randn(1, 128, 8, 8) * 0.02)      # Was 256
-        self.pos_P3_thermal = nn.Parameter(torch.randn(1, 128, 8, 8) * 0.02)  # Was 256
+        # For YOLOv5l (width_multiple = 1.0) 
+        self.pos_P5_rgb = nn.Parameter(torch.randn(1, 1024, 8, 8) * 0.02)     # P5: 1024 channels
+        self.pos_P5_thermal = nn.Parameter(torch.randn(1, 1024, 8, 8) * 0.02) # P5: 1024 channels
+        self.pos_P4_rgb = nn.Parameter(torch.randn(1, 512, 8, 8) * 0.02)      # P4: 512 channels
+        self.pos_P4_thermal = nn.Parameter(torch.randn(1, 512, 8, 8) * 0.02)  # P4: 512 channels
+        self.pos_P3_rgb = nn.Parameter(torch.randn(1, 256, 8, 8) * 0.02)      # P3: 256 channels
+        self.pos_P3_thermal = nn.Parameter(torch.randn(1, 256, 8, 8) * 0.02)  # P3: 256 channels
         
         self.pos_embs = {
             'P5': {'rgb': self.pos_P5_rgb, 'thermal': self.pos_P5_thermal},
@@ -320,6 +320,13 @@ class Model(nn.Module):
                                 
                 scale = self.get_module_scale(input_channels)
                 # Determine required coarse context
+                if scale == 'P4':
+                    expected_coarse = 1024  # From P5
+                elif scale == 'P3':  
+                    expected_coarse = 512   # From P4
+                    
+                if coarse_context.shape[1] != expected_coarse:
+                    raise RuntimeError(f"Scale {scale} expects {expected_coarse} coarse channels, got {coarse_context.shape[1]}")
                 if scale == 'P4':
                     coarse_context = fused_contexts.get('P5')
                     if coarse_context is None:
@@ -420,7 +427,13 @@ class Model(nn.Module):
                     x = m(x2)  # Thermal stream
                 else:
                     x = m(x)   # RGB stream or other
-
+            # In models/yolo_test.py, in forward_once() method, add after BCAM modules:
+            if isinstance(m, (BCAM, BCAM_Progressive, BCAM_SingleOutput)):
+                print(f"Layer {i}: {type(m).__name__}")
+                if isinstance(x, tuple):
+                    print(f"  Input: RGB={x[0].shape}, Thermal={x[1].shape}")
+                else:
+                    print(f"  Output: {x.shape}")
             y.append(x if m.i in self.save else None)
             i += 1
 
