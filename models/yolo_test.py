@@ -250,13 +250,12 @@ class Model(nn.Module):
 
     def get_module_scale(self, channels):
         """Infer pyramid scale from channel dimensions"""
-        # Account for width_multiple = 0.5 scaling
-        if channels == 128:  # 256 * 0.5 = 128 
+        # For YOLOv5l (width_multiple = 1.0) 
+        if channels == 256:    # P3 level
             return 'P3'
-        elif channels == 256:  # 512 * 0.5 = 256
+        elif channels == 512:  # P4 level  
             return 'P4'
-        elif channels == 512:  # 1024 * 0.5 = 512
-            
+        elif channels == 1024: # P5 level
             return 'P5'
         else: 
             raise ValueError(f"Unknown scale for channels {channels}")

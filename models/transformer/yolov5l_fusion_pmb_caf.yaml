@@ -1,11 +1,12 @@
 # Progressive Bidirectional Cross-Attention Module (PROG-BCAM) for YOLOv5
-# Progressive fusion: P5 (basic BCAM) → P4 (progressive BCAM) → P3 (progressive BCAM)
+# Progressive fusion: P5 (basic BCAM) → P4 (progressive BCAM) → P3 (progressive BCAM)  
 # Each progressive BCAM receives coarse context from the previous scale
+# Designed for YOLOv5l scaling for fair comparison with baseline models
 
 # parameters
 nc: 3  # number of classes
-depth_multiple: 1.00  # model depth multiple  
-width_multiple: 1.00  # layer channel multiple
+depth_multiple: 1.00  # model depth multiple (YOLOv5l)
+width_multiple: 1.00  # layer channel multiple (YOLOv5l)
 
 # anchors
 anchors:
