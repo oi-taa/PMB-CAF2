@@ -1,0 +1,88 @@
+# Progressive Bidirectional Cross-Attention Module (PROG-BCAM) for YOLOv5
+# Progressive fusion: P5 (basic BCAM) → P4 (progressive BCAM) → P3 (progressive BCAM)  
+# Each progressive BCAM receives coarse context from the previous scale
+# Designed for YOLOv5l scaling for fair comparison with baseline models
+
+# parameters
+nc: 3  # number of classes
+depth_multiple: 1.00  # model depth multiple (YOLOv5l)
+width_multiple: 1.00  # layer channel multiple (YOLOv5l)
+
+# anchors
+anchors:
+  - [10,13, 16,30, 33,23]   # P3/8
+  - [30,61, 62,45, 59,119]  # P4/16
+  - [116,90, 156,198, 373,326]  # P5/32
+
+# YOLOv5 backbone with Progressive BCAM fusion
+backbone:
+  # [from, number, module, args]
+  [
+    ######### RGB Stream (0-9) #############
+    [-1, 1, Focus, [64, 3]],        # 0-P1/2
+    [-1, 1, Conv, [128, 3, 2]],     # 1-P2/4
+    [-1, 3, C3, [128]],             # 2-P2/4
+    [-1, 1, Conv, [256, 3, 2]],     # 3-P3/8
+    [-1, 9, C3, [256]],             # 4-P3/8 RGB features
+    [-1, 1, Conv, [512, 3, 2]],     # 5-P4/16
+    [-1, 9, C3, [512]],             # 6-P4/16 RGB features
+    [-1, 1, Conv, [1024, 3, 2]],    # 7-P5/32
+    [-1, 1, SPP, [1024, [5, 9, 13]]], # 8-P5/32 SPP
+    [-1, 3, C3, [1024, False]],     # 9-P5/32 RGB final
+
+    ######### Thermal Stream (10-19) #############
+    [-4, 1, Focus, [64, 3]],        # 10-P1/2 (thermal input via -4)
+    [-1, 1, Conv, [128, 3, 2]],     # 11-P2/4
+    [-1, 3, C3, [128]],             # 12-P2/4
+    [-1, 1, Conv, [256, 3, 2]],     # 13-P3/8
+    [-1, 9, C3, [256]],             # 14-P3/8 Thermal features
+    [-1, 1, Conv, [512, 3, 2]],     # 15-P4/16
+    [-1, 9, C3, [512]],             # 16-P4/16 Thermal features
+    [-1, 1, Conv, [1024, 3, 2]],    # 17-P5/32
+    [-1, 1, SPP, [1024, [5, 9, 13]]], # 18-P5/32 SPP
+    [-1, 3, C3, [1024, False]],     # 19-P5/32 Thermal final
+
+    ######### Progressive BCAM Fusion Chain #############
+    # P5: Basic BCAM (establishes coarse context)
+    [[9,19], 1, BCAM_SingleOutput, [1024]],                    # 20: P5 basic fusion (1024 channels)
+    
+    # P4: Progressive BCAM (uses P5 coarse context)
+    [[6,16], 1, BCAM_Progressive, [512, 1024]],                # 21: P4 progressive fusion (512 channels, 1024 coarse)
+    
+    # P3: Progressive BCAM (uses P4 coarse context)  
+    [[4,14], 1, BCAM_Progressive, [256, 512]],                 # 22: P3 progressive fusion (256 channels, 512 coarse)
+  ]
+
+# YOLOv5 head - Modified for progressive fusion outputs
+head:
+  [
+    # Process P5 fused output (20x20)
+    [20, 1, Conv, [512, 1, 1]],                    # 23: Project P5 (1024→512)
+    [-1, 1, nn.Upsample, [None, 2, 'nearest']],    # 24: P5→P4 upsample (20x20→40x40)
+    
+    # Process P4 progressive output (40x40)  
+    [21, 1, Conv, [512, 1, 1]],                    # 25: Project P4 (ensure 512 channels)
+    [[-1, -2], 1, Concat, [1]],                    # 26: Cat P4 + upsampled P5 (40x40)
+    [-1, 3, C3, [512, False]],                     # 27: Process P4 level
+    
+    # Continue to P3
+    [-1, 1, Conv, [256, 1, 1]],                    # 28: Project P4 (512→256)
+    [-1, 1, nn.Upsample, [None, 2, 'nearest']],    # 29: P4→P3 upsample (40x40→80x80)
+    
+    # Process P3 progressive output (80x80)
+    [22, 1, Conv, [256, 1, 1]],                    # 30: Project P3 (ensure 256 channels)  
+    [[-1, -2], 1, Concat, [1]],                    # 31: Cat P3 + upsampled P4 (80x80)
+    [-1, 3, C3, [256, False]],                     # 32: Process P3 level (P3/8-small)
+    
+    # Downsample path for detection
+    [-1, 1, Conv, [256, 3, 2]],                    # 33: P3→P4 downsample (80x80→40x40)
+    [[-1, 27], 1, Concat, [1]],                    # 34: Cat with P4 path (40x40)
+    [-1, 3, C3, [512, False]],                     # 35: Final P4 (P4/16-medium)
+    
+    [-1, 1, Conv, [512, 3, 2]],                    # 36: P4→P5 downsample (40x40→20x20)
+    [[-1, 23], 1, Concat, [1]],                    # 37: Cat with P5 path (20x20)  
+    [-1, 3, C3, [1024, False]],                    # 38: Final P5 (P5/32-large)
+    
+    # Detection layers
+    [[32, 35, 38], 1, Detect, [nc, anchors]],      # Detect(P3, P4, P5)
+  ]

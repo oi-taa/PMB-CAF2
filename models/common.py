@@ -1147,6 +1147,13 @@ class BCAM_Progressive(BCAM):
         When return_attn=True: returns ((rgb, thermal, fused), attn_info)
         """
         rgb_fea, thermal_fea = x[0], x[1]
+        print(f"🔍 BCAM_Progressive DEBUG:")
+        if coarse_context is not None:
+            print(f"  ✅ Coarse context: {coarse_context.shape}")
+            is_zeros = torch.allclose(coarse_context, torch.zeros_like(coarse_context), atol=1e-6)
+            print(f"  📊 Stats: min={coarse_context.min():.3f}, max={coarse_context.max():.3f}, is_zeros={is_zeros}")
+        else:
+            print(f"  ❌ No coarse context provided")
 
         # Interface checks
         assert rgb_fea.shape[1] == self.d_model and thermal_fea.shape[1] == self.d_model, \
