@@ -312,31 +312,22 @@ class Model(nn.Module):
             # === PMB-CAF Progressive Orchestration ===
             if isinstance(m, BCAM_Progressive):
                 
-                # Progressive BCAM - requires coarse context
-                if isinstance(x, (tuple, list)):
-                    input_channels = x[0].shape[1]
-                else:
-                    input_channels = x.shape[1]
-                                
-                scale = self.get_module_scale(input_channels)
-                # Determine required coarse context
-                if scale == 'P4':
-                    expected_coarse = 1024  # From P5
-                elif scale == 'P3':  
-                    expected_coarse = 512   # From P4
-                    
-                if coarse_context.shape[1] != expected_coarse:
-                    raise RuntimeError(f"Scale {scale} expects {expected_coarse} coarse channels, got {coarse_context.shape[1]}")
+                
                 if scale == 'P4':
                     coarse_context = fused_contexts.get('P5')
+                    expected_coarse = 1024  # From P5
                     if coarse_context is None:
                         raise RuntimeError(f"P4 BCAM_Progressive at layer {i} missing P5 context")
                 elif scale == 'P3':
                     coarse_context = fused_contexts.get('P4')
+                    expected_coarse = 512 
                     if coarse_context is None:
                         raise RuntimeError(f"P3 BCAM_Progressive at layer {i} missing P4 context")
                 else:
                     raise RuntimeError(f"BCAM_Progressive not supported at scale {scale}")
+                 # Validation (now coarse_context is defined)
+                if coarse_context.shape[1] != expected_coarse:
+                    raise RuntimeError(f"Scale {scale} expects {expected_coarse} coarse channels, got {coarse_context.shape[1]}")
 
                 # Get positional embeddings for current scale
                 pos_rgb = self.pos_embs[scale]['rgb']
