@@ -293,6 +293,11 @@ class Model(nn.Module):
         fused_contexts = {}  # Store fused outputs for progressive chain
         
         i = 0
+        # Before the BCAM_Progressive section, add:
+        if i == 21:  # Layer 21 is your first BCAM_Progressive
+            print(f"\nDebug saved outputs for layer 21:")
+            print(f"  y[6] = {y[6].shape if y[6] is not None else None}")
+            print(f"  y[16] = {y[16].shape if y[16] is not None else None}")
         for m in self.model:
             # Handle input routing (existing logic)
             if m.f != -1:
