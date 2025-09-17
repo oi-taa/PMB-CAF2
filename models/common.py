@@ -865,6 +865,24 @@ class BCAM(nn.Module):
         return rgb_final, thermal_final, fused_final
 
     
+class BCAM_SingleOutput(BCAM):
+    """BCAM variant that returns single fused tensor for clean comparison"""
+    def __init__(self, d_model, output_mode='fused', **kwargs):
+        super().__init__(d_model, **kwargs)
+        self.output_mode = output_mode  # 'fused', 'rgb', 'thermal'
+    
+    def forward(self, x, **kwargs):
+        rgb_final, thermal_final, fused_final = super().forward(x, **kwargs)
+        
+        if self.output_mode == 'fused':
+            return fused_final
+        elif self.output_mode == 'rgb':
+            return rgb_final
+        elif self.output_mode == 'thermal':
+            return thermal_final
+        else:
+            return (rgb_final, thermal_final, fused_final)  # Original
+        
 class DropPath(nn.Module):
     """Drop paths (Stochastic Depth) per sample"""
     def __init__(self, drop_prob=None):

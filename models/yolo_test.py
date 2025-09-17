@@ -689,6 +689,9 @@ def parse_model(d, ch):  # model_dict, input_channels(3)
         elif m is BCAM:
             c2 = ch[f[0]]
             args = [c2] + args[1:] if len(args) > 1 else [c2]
+        elif m is BCAM_SingleOutput:
+            c2 = ch[f[0]]
+            m_ = BCAM_SingleOutput(c2, output_mode='fused', *args[1:])
         elif m is UCAM:
             c2 = ch[f[0]]
             m_ = m(c2, *args[1:])
