@@ -862,7 +862,6 @@ def train_rgb_ir(hyp, opt, device, tb_writer=None):
         # print(list(testloader.sampler))
 
         # DDP process 0 or single-GPU
-        
         if rank in [-1, 0]:
             # mAP
             ema.update_attr(model, include=['yaml', 'nc', 'hyp', 'gr', 'names', 'stride', 'class_weights'])
@@ -870,92 +869,192 @@ def train_rgb_ir(hyp, opt, device, tb_writer=None):
             if not opt.notest or final_epoch:  # Calculate mAP
                 wandb_logger.current_epoch = epoch + 1
                 
-                try:
+                # Run testing with enhanced metrics
+                results, maps, times = test.test(data_dict,
+                                            batch_size=batch_size * 2,
+                                            imgsz=imgsz_test,
+                                            model=ema.ema,
+                                            single_cls=opt.single_cls,
+                                            dataloader=testloader,
+                                            save_dir=save_dir,
+                                            verbose=nc < 50 and final_epoch,
+                                            plots=plots and final_epoch,
+                                            wandb_logger=wandb_logger,
+                                            compute_loss=compute_loss,
+                                            is_coco=is_coco)
+                
+                # Extract metrics from enhanced results
+                if len(results) >= 11:  # Enhanced results with size metrics
+                    mp, mr, map50, map75, map_avg = results[:5]
+                    mAP_small, mAP_medium, mAP_large = results[8:11]
+                    
+                    # For final epoch, compute efficiency metrics and save comprehensive results
                     if final_epoch:
-                        # Use safe test function for final epoch with comprehensive metrics
-                        results, maps, times, size_metrics, efficiency_metrics = safe_test_with_metrics(
-                            data_dict,
-                            batch_size=batch_size * 2,
-                            imgsz=imgsz_test,
-                            model=ema.ema,
-                            single_cls=opt.single_cls,
-                            dataloader=testloader,
-                            save_dir=save_dir,
-                            verbose=nc < 50 and final_epoch,
-                            plots=plots and final_epoch,
-                            wandb_logger=wandb_logger,
-                            compute_loss=compute_loss,
-                            is_coco=is_coco
-                        )
-                        
-                        # Save comprehensive metrics for final epoch
                         try:
+                            # Compute efficiency metrics
+                            efficiency_metrics = test.compute_efficiency_metrics(ema.ema, device)
+                            
+                            # Print comprehensive final results
+                            print("\n" + "="*80)
+                            print("🎯 PMB-CAF FINAL COMPREHENSIVE RESULTS")
+                            print("="*80)
+                            print(f"Dataset: {Path(opt.data).stem}")
+                            print(f"Method: PMB-CAF")
+                            print(f"Model: {opt.cfg}")
+                            print("-" * 80)
+                            
+                            print(f"📊 Detection Performance:")
+                            print(f"  mAP@0.5:        {map50:.3f}")
+                            print(f"  mAP@0.75:       {map75:.3f}")
+                            print(f"  mAP@[0.5:0.95]: {map_avg:.3f}")
+                            print(f"  Precision:      {mp:.3f}")
+                            print(f"  Recall:         {mr:.3f}")
+                            
+                            print(f"\n📏 Size-based Performance:")
+                            print(f"  mAP_small:      {mAP_small:.3f}")
+                            print(f"  mAP_medium:     {mAP_medium:.3f}")
+                            print(f"  mAP_large:      {mAP_large:.3f}")
+                            
+                            print(f"\n⚡ Efficiency Metrics:")
+                            print(f"  Parameters:     {efficiency_metrics['params_M']:.2f}M")
+                            print(f"  GFLOPs:         {efficiency_metrics['gflops']:.2f}")
+                            print(f"  FPS:            {efficiency_metrics['fps']:.1f}")
+                            print(f"  Inference Time: {efficiency_metrics['inference_time_ms']:.2f}ms")
+                            
+                            print(f"\n🚀 Speed Breakdown:")
+                            inf_time, nms_time, total_time = times[:3]
+                            print(f"  Inference:      {inf_time:.1f}ms")
+                            print(f"  NMS:            {nms_time:.1f}ms")
+                            print(f"  Total:          {total_time:.1f}ms")
+                            
+                            print("\n📋 Summary Table (Copy for Paper):")
+                            print("-" * 80)
+                            print(f"Method          | mAP@50 | mAP@75 | mAP@[0.5:0.95] | mAP_S | mAP_M | mAP_L | Params | GFLOPs | FPS")
+                            print(f"PMB-CAF         | {map50:.3f}  | {map75:.3f}  | {map_avg:.3f}      | {mAP_small:.3f} | {mAP_medium:.3f} | {mAP_large:.3f} | {efficiency_metrics['params_M']:.1f}M   | {efficiency_metrics['gflops']:.1f}    | {efficiency_metrics['fps']:.0f}")
+                            print("="*80)
+                            
+                            # Save comprehensive metrics to multiple formats
                             import json
-                            comprehensive_metrics = {
-                                'epoch': epoch,
-                                'dataset': Path(opt.data).stem,
-                                'method': 'PMB-CAF',
-                                'mAP@50': float(results[2]) if len(results) > 2 else 0.0,
-                                'mAP@75': float(results[3]) if len(results) > 3 else 0.0,
-                                'mAP@[0.5:0.95]': float(results[4]) if len(results) > 4 else 0.0,
-                                'precision': float(results[0]) if len(results) > 0 else 0.0,
-                                'recall': float(results[1]) if len(results) > 1 else 0.0,
-                                **size_metrics,
-                                **efficiency_metrics
+                            import pandas as pd
+                            
+                            # Create comprehensive metrics dictionary
+                            final_metrics = {
+                                'experiment_info': {
+                                    'dataset': Path(opt.data).stem,
+                                    'method': 'PMB-CAF',
+                                    'model_config': opt.cfg,
+                                    'epochs': epoch + 1,
+                                    'batch_size': opt.batch_size,
+                                    'image_size': imgsz_test,
+                                    'timestamp': time.strftime('%Y-%m-%d %H:%M:%S')
+                                },
+                                'detection_performance': {
+                                    'mAP@50': float(map50),
+                                    'mAP@75': float(map75),
+                                    'mAP@[0.5:0.95]': float(map_avg),
+                                    'precision': float(mp),
+                                    'recall': float(mr)
+                                },
+                                'size_based_performance': {
+                                    'mAP_small': float(mAP_small),
+                                    'mAP_medium': float(mAP_medium),
+                                    'mAP_large': float(mAP_large)
+                                },
+                                'efficiency_metrics': {
+                                    'parameters_M': efficiency_metrics['params_M'],
+                                    'gflops': efficiency_metrics['gflops'],
+                                    'fps': efficiency_metrics['fps'],
+                                    'inference_time_ms': efficiency_metrics['inference_time_ms']
+                                },
+                                'speed_breakdown': {
+                                    'inference_ms': float(inf_time),
+                                    'nms_ms': float(nms_time),
+                                    'total_ms': float(total_time)
+                                }
                             }
                             
-                            with open(save_dir / 'final_metrics.json', 'w') as f:
-                                json.dump(comprehensive_metrics, f, indent=2)
+                            # Save to JSON
+                            json_path = save_dir / 'final_comprehensive_results.json'
+                            with open(json_path, 'w') as f:
+                                json.dump(final_metrics, f, indent=2)
                             
-                            print(f"\n📊 Final metrics saved to {save_dir / 'final_metrics.json'}")
+                            # Save to CSV for easy table creation
+                            csv_data = {
+                                'Method': ['PMB-CAF'],
+                                'Dataset': [Path(opt.data).stem],
+                                'mAP@50': [map50],
+                                'mAP@75': [map75],
+                                'mAP@[0.5:0.95]': [map_avg],
+                                'mAP_small': [mAP_small],
+                                'mAP_medium': [mAP_medium],
+                                'mAP_large': [mAP_large],
+                                'Params_M': [efficiency_metrics['params_M']],
+                                'GFLOPs': [efficiency_metrics['gflops']],
+                                'FPS': [efficiency_metrics['fps']],
+                                'Inference_ms': [inf_time],
+                                'NMS_ms': [nms_time],
+                                'Total_ms': [total_time]
+                            }
+                            
+                            df = pd.DataFrame(csv_data)
+                            csv_path = save_dir / 'results_table.csv'
+                            df.to_csv(csv_path, index=False)
+                            
+                            # Save a simple summary for quick reference
+                            summary_path = save_dir / 'results_summary.txt'
+                            with open(summary_path, 'w') as f:
+                                f.write("PMB-CAF Evaluation Results\n")
+                                f.write("=" * 50 + "\n")
+                                f.write(f"Dataset: {Path(opt.data).stem}\n")
+                                f.write(f"mAP@50: {map50:.3f}\n")
+                                f.write(f"mAP@75: {map75:.3f}\n")
+                                f.write(f"mAP@[0.5:0.95]: {map_avg:.3f}\n")
+                                f.write(f"mAP_small: {mAP_small:.3f}\n")
+                                f.write(f"mAP_medium: {mAP_medium:.3f}\n")
+                                f.write(f"mAP_large: {mAP_large:.3f}\n")
+                                f.write(f"Parameters: {efficiency_metrics['params_M']:.2f}M\n")
+                                f.write(f"GFLOPs: {efficiency_metrics['gflops']:.2f}\n")
+                                f.write(f"FPS: {efficiency_metrics['fps']:.1f}\n")
+                            
+                            print(f"\n💾 Results saved to:")
+                            print(f"  📄 JSON: {json_path}")
+                            print(f"  📊 CSV:  {csv_path}")
+                            print(f"  📝 TXT:  {summary_path}")
                             
                         except Exception as e:
-                            print(f"Warning: Could not save comprehensive metrics: {e}")
-                            
-                    else:
-                        # Regular test for intermediate epochs
-                        results, maps, times = test.test(data_dict,
-                                                batch_size=batch_size * 2,
-                                                imgsz=imgsz_test,
-                                                model=ema.ema,
-                                                single_cls=opt.single_cls,
-                                                dataloader=testloader,
-                                                save_dir=save_dir,
-                                                verbose=nc < 50 and final_epoch,
-                                                plots=plots and final_epoch,
-                                                wandb_logger=wandb_logger,
-                                                compute_loss=compute_loss,
-                                                is_coco=is_coco)
-                                                
-                except Exception as e:
-                    print(f"Warning: Testing failed: {e}")
-                    # Use default results to continue training
-                    results = (0., 0., 0., 0., 0., 0., 0., 0.)
+                            print(f"Warning: Could not compute efficiency metrics: {e}")
+                            import traceback
+                            traceback.print_exc()
+                else:
+                    # Handle case where enhanced results are not available
+                    mp, mr, map50, map75, map_avg = results[:5] if len(results) >= 5 else (0, 0, 0, 0, 0)
+                    mAP_small, mAP_medium, mAP_large = 0.0, 0.0, 0.0
+                    print("Warning: Enhanced results with size metrics not available")
 
-            # Write results (use only the core results)
+            # Write results to file (use core results for compatibility)
             core_results = results[:8] if len(results) >= 8 else results
             with open(results_file, 'a') as f:
                 f.write(s + '%10.4g' * len(core_results) % core_results + '\n')
-
-            # Write
-            with open(results_file, 'a') as f:
-                f.write(s + '%10.4g' * 8 % results + '\n')  # append metrics, val_loss
+            
             if len(opt.name) and opt.bucket:
                 os.system('gsutil cp %s gs://%s/results/results%s.txt' % (results_file, opt.bucket, opt.name))
 
-            # Log
+            # Log to tensorboard and wandb
             tags = ['train/box_loss', 'train/obj_loss', 'train/cls_loss',  # train loss
                     'metrics/precision', 'metrics/recall', 'metrics/mAP_0.5', 'metrics/mAP_0.75', 'metrics/mAP_0.5:0.95',
                     'val/box_loss', 'val/obj_loss', 'val/cls_loss',  # val loss
                     'x/lr0', 'x/lr1', 'x/lr2']  # params
-            for x, tag in zip(list(mloss[:-1]) + list(results) + lr, tags):
+            
+            log_values = list(mloss[:-1]) + [mp, mr, map50, map75, map_avg] + list(results[5:8]) + lr
+            
+            for x, tag in zip(log_values, tags):
                 if tb_writer:
                     tb_writer.add_scalar(tag, x, epoch)  # tensorboard
                 if wandb_logger.wandb:
                     wandb_logger.log({tag: x})  # W&B
 
             # Update best mAP
-            fi = fitness(np.array(results).reshape(1, -1))  # weighted combination of [P, R, mAP@.5, mAP@.5-.95]
+            fi = fitness(np.array(results[:8]).reshape(1, -1))  # weighted combination of [P, R, mAP@.5, mAP@.5-.95]
             if fi > best_fitness:
                 best_fitness = fi
             wandb_logger.end_epoch(best_result=best_fitness == fi)
