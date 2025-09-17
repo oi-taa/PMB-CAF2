@@ -1,0 +1,75 @@
+# P4 Single-Scale BCAM Fusion
+# One BCAM at P4 level (16x downsampled) - better spatial-semantic balance
+
+# parameters
+nc: 3  # number of classes
+depth_multiple: 1.00  # model depth multiple
+width_multiple: 1.00  # layer channel multiple
+
+# anchors
+anchors:
+  - [10,13, 16,30, 33,23]   # P3/8
+  - [30,61, 62,45, 59,119]  # P4/16
+  - [116,90, 156,198, 373,326]  # P5/32
+
+backbone:
+  [
+    ######### RGB Stream #############
+    [-1, 1, Focus, [64, 3]],        # 0-P1/2 RGB
+    [-1, 1, Conv, [128, 3, 2]],     # 1-P2/4 RGB
+    [-1, 3, C3, [128]],             # 2-P2/4 RGB
+    [-1, 1, Conv, [256, 3, 2]],     # 3-P3/8 RGB
+    [-1, 9, C3, [256]],             # 4-P3/8 RGB features
+    [-1, 1, Conv, [512, 3, 2]],     # 5-P4/16 RGB
+    [-1, 9, C3, [512]],             # 6-P4/16 RGB features
+    [-1, 1, Conv, [1024, 3, 2]],    # 7-P5/32 RGB
+    [-1, 1, SPP, [1024, [5, 9, 13]]], # 8-P5/32 RGB SPP
+    [-1, 3, C3, [1024, False]],     # 9-P5/32 RGB final
+
+    ######### Thermal Stream #############
+    [-4, 1, Focus, [64, 3]],        # 10-P1/2 Thermal
+    [-1, 1, Conv, [128, 3, 2]],     # 11-P2/4 Thermal
+    [-1, 3, C3, [128]],             # 12-P2/4 Thermal
+    [-1, 1, Conv, [256, 3, 2]],     # 13-P3/8 Thermal
+    [-1, 9, C3, [256]],             # 14-P3/8 Thermal features
+    [-1, 1, Conv, [512, 3, 2]],     # 15-P4/16 Thermal
+    [-1, 9, C3, [512]],             # 16-P4/16 Thermal features
+    [-1, 1, Conv, [1024, 3, 2]],    # 17-P5/32 Thermal
+    [-1, 1, SPP, [1024, [5, 9, 13]]], # 18-P5/32 Thermal SPP
+    [-1, 3, C3, [1024, False]],     # 19-P5/32 Thermal final
+
+    ######### SINGLE FUSION POINT - P4 BCAM #############
+    [[6,16], 1, BCAM_SingleOutput, [512]],      # 20: Cross-attention fusion at P4 only
+  ]
+
+head:
+  [
+    # P5 path - uses ORIGINAL RGB features (no fusion)
+    [9, 1, Conv, [512, 1, 1]],                     # 21: Project RGB P5
+    [-1, 1, nn.Upsample, [None, 2, 'nearest']],    # 22: Upsample P5→P4
+
+    # P4 path - uses BCAM-fused features
+    [20, 1, Conv, [512, 1, 1]],                    # 23: Project fused P4
+    [[-1, -2], 1, Concat, [1]],                    # 24: Cat fused P4 + upsampled P5
+    [-1, 3, C3, [512, False]],                     # 25: Process P4 level
+
+    # P3 path - gets fusion info indirectly through P4
+    [-1, 1, Conv, [256, 1, 1]],                    # 26: Project P4
+    [-1, 1, nn.Upsample, [None, 2, 'nearest']],    # 27: Upsample P4→P3
+
+    [4, 1, Conv, [256, 1, 1]],                     # 28: Project RGB P3
+    [[-1, -2], 1, Concat, [1]],                    # 29: Cat P3 + upsampled P4
+    [-1, 3, C3, [256, False]],                     # 30: Process P3 (small)
+
+    # Downsample path
+    [-1, 1, Conv, [256, 3, 2]],                    # 31: P3→P4 downsample
+    [[-1, 25], 1, Concat, [1]],                    # 32: Cat with P4 path
+    [-1, 3, C3, [512, False]],                     # 33: Final P4 (medium)
+
+    [-1, 1, Conv, [512, 3, 2]],                    # 34: P4→P5 downsample
+    [[-1, 21], 1, Concat, [1]],                    # 35: Cat with P5 path
+    [-1, 3, C3, [1024, False]],                    # 36: Final P5 (large)
+
+    # Detection layers
+    [[30, 33, 36], 1, Detect, [nc, anchors]],      # Detect(P3, P4, P5)
+  ]
