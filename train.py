@@ -920,51 +920,7 @@ def train_rgb_ir(hyp, opt, device, tb_writer=None):
 
             # Backward
             scaler.scale(loss).backward()
-            if i % 100 == 0:
-                print(f"\n🔍 Epoch {epoch}, Batch {i} - BCAM Debug:")
-                
-                # First, let's see if BCAM modules exist
-                bcam_found = False
-                for name, module in model.named_modules():
-                    if 'bcam' in str(type(module)).lower():
-                        bcam_found = True
-                        print(f"  Found BCAM module: {name} - {type(module)}")
-                
-                if not bcam_found:
-                    print("  ❌ NO BCAM modules found in model!")
-                
-                # Check all parameters with 'bcam' in name
-                # Check parameters from BCAM modules (model.20, model.21, model.22)
-                bcam_params = 0
-                bcam_modules = ['model.20', 'model.21', 'model.22']
-
-                print(f"  Looking for BCAM parameters in modules: {bcam_modules}")
-
-                for name, param in model.named_parameters():
-                    # Check if parameter belongs to BCAM modules
-                    is_bcam_param = any(name.startswith(module_name + '.') for module_name in bcam_modules)
-                    
-                    if is_bcam_param:
-                        bcam_params += 1
-                        grad_status = "HAS_GRAD" if param.grad is not None else "NO_GRAD"
-                        if param.grad is not None:
-                            grad_norm = param.grad.norm().item()
-                            param_norm = param.data.norm().item()
-                            print(f"  {name}: {grad_status} grad_norm={grad_norm:.6f} param_norm={param_norm:.6f}")
-                        else:
-                            print(f"  {name}: {grad_status}")
-
-                print(f"  Total BCAM parameters found: {bcam_params}")
-
-                # Also print a few non-BCAM parameters for comparison
-                print(f"  \n  Comparison - Some backbone parameters:")
-                backbone_count = 0
-                for name, param in model.named_parameters():
-                    if not any(name.startswith(module_name + '.') for module_name in bcam_modules) and backbone_count < 3:
-                        if param.grad is not None:
-                            grad_norm = param.grad.norm().item()
-                            print(f"  {name}: grad_norm={grad_norm:.6f}")
-                            backbone_count += 1
+           
 
             # Optimize
             if ni % accumulate == 0:
