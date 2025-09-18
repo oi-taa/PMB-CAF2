@@ -445,7 +445,6 @@ class Model(nn.Module):
                     x = m(x2)  # Thermal stream
                 else:
                     x = m(x)   # RGB stream or other
-                    print(f"DEBUG Layer {i}: {m.type if hasattr(m, 'type') else type(m)} -> output shape: {x.shape if hasattr(x, 'shape') else 'Not tensor'}")
            
             y.append(x if m.i in self.save else None)
             i += 1
@@ -667,8 +666,7 @@ def parse_model(d, ch):  # model_dict, input_channels(3)
     print(f"DEBUG: Initial ch = {ch}")
     
     for i, (f, n, m, args) in enumerate(d['backbone'] + d['head']):  # from, number, module, args
-        print(f"\nDEBUG: Layer {i}: f={f}, n={n}, m={m}, args={args}")
-        print(f"DEBUG: Current ch length = {len(ch)}, ch = {ch}")
+        
         
         m = eval(m) if isinstance(m, str) else m  # eval strings
         for j, a in enumerate(args):
@@ -767,7 +765,6 @@ def parse_model(d, ch):  # model_dict, input_channels(3)
             m_.thermal_pos_embed = None
         elif m is Concat:
             c2 = sum([ch[x] for x in f])
-            print(f"DEBUG: Concat with f={f}, c2={c2}")
         elif m is Detect:
             args.append([ch[x] for x in f])
             if isinstance(args[1], int):  # number of anchors
@@ -781,14 +778,10 @@ def parse_model(d, ch):  # model_dict, input_channels(3)
             c2 = ch[f_idx]  # Output channels same as input
             # args[0] should be the target size like [20] or 20
             target_size = args[0] if len(args) > 0 else 1
-            print(f"DEBUG: AdaptiveAvgPool2d target_size={target_size}, input_channels={c2}")
             m_ = nn.AdaptiveAvgPool2d(target_size)
 
         # ALSO add this debug to the Concat section:
-        elif m is Concat:
-            c2 = sum([ch[x] for x in f])
-            print(f"DEBUG: Concat with f={f}, c2={c2}")
-            print(f"DEBUG: Individual channel sizes: {[ch[x] for x in f]}")
+        
         elif m is Contract:
             c2 = ch[f] * args[0] ** 2
         elif m is Expand:
