@@ -765,8 +765,17 @@ class BCAM(nn.Module):
 
         if return_attn:
             # average attention across heads -> (B, L, L)
-            attn_avg = attn_weights.mean(dim=1)
-            return attended, attn_avg
+            if return_attn:
+                attn_avg = attn_weights.mean(dim=1)
+                
+                # ADD THIS DEBUG:
+                print(f"🎯 ATTENTION DEBUG:")
+                print(f"  Attn weights shape: {attn_weights.shape}")
+                print(f"  Mean attention: {attn_weights.mean():.4f}")
+                print(f"  Attention std: {attn_weights.std():.4f}")
+                print(f"  Max attention: {attn_weights.max():.4f}")
+                
+                return attended, attn_avg
         return attended
 
     def forward(self, x, pos_rgb=None, pos_thermal=None, return_attn=False):

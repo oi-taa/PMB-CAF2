@@ -584,6 +584,12 @@ def train_rgb_ir(hyp, opt, device, tb_writer=None):
         logger.info('Transferred %g/%g items from %s' % (len(state_dict), len(model.state_dict()), weights))  # report
     else:
         model = Model(opt.cfg, ch=3, nc=nc, anchors=hyp.get('anchors')).to(device)  # create
+        total_params = sum(p.numel() for p in model.parameters())
+        bcam_params = sum(p.numel() for name, p in model.named_parameters() if 'bcam' in name.lower())
+        print(f"🔍 PARAMETER DEBUG:")
+        print(f"  Total: {total_params/1e6:.1f}M")
+        print(f"  BCAM: {bcam_params/1e6:.1f}M")
+        print(f"  Backbone: {(total_params-bcam_params)/1e6:.1f}M")
     with torch_distributed_zero_first(rank):
         check_dataset(data_dict)  # check
     train_path_rgb = data_dict['train_rgb']
