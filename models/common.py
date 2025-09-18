@@ -833,7 +833,7 @@ class BCAM(nn.Module):
             rgb_attended = self._multi_head_attention(rgb_q, thermal_k, thermal_v, return_attn=False)
 
         rgb_attended = self.rgb_out(rgb_attended)    # (B, L, C)
-        rgb_tokens = rgb_tokens + rgb_attended       # Residual connection
+        rgb_tokens = rgb_tokens + 0.1 * rgb_attended       # Residual connection
 
         # Thermal -> RGB attention
         thermal_q = self.thermal_q(thermal_normed)   # (B, L, C)
@@ -846,7 +846,7 @@ class BCAM(nn.Module):
             thermal_attended = self._multi_head_attention(thermal_q, rgb_k, rgb_v, return_attn=False)
 
         thermal_attended = self.thermal_out(thermal_attended)  # (B, L, C)
-        thermal_tokens = thermal_tokens + thermal_attended      # Residual connection
+        thermal_tokens = thermal_tokens + 0.1 * thermal_attended      # Residual connection
         print(f"🎯 ATTENTION DEBUG:")
         print(f"  RGB features: min={rgb_q.min():.3f}, max={rgb_q.max():.3f}, mean={rgb_q.mean():.3f}")
         print(f"  Thermal K: min={thermal_k.min():.3f}, max={thermal_k.max():.3f}, mean={thermal_k.mean():.3f}")
