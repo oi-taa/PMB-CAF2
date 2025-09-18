@@ -682,7 +682,7 @@ class BCAM(nn.Module):
         self.head_dim = d_model // num_heads
         self.scale = math.sqrt(self.head_dim)
         assert d_model % num_heads == 0
-
+        self.fusion_weights = nn.Parameter(torch.tensor([0.5, 0.5], dtype=torch.float32))
         # spatial handling
         self.vert_anchors = vert_anchors
         self.horz_anchors = horz_anchors
@@ -855,12 +855,14 @@ class BCAM(nn.Module):
         rgb_spatial = rgb_tokens.transpose(1, 2).view(bs, c, self.vert_anchors, self.horz_anchors)  # (B, C, H, W)
         thermal_spatial = thermal_tokens.transpose(1, 2).view(bs, c, self.vert_anchors, self.horz_anchors)  # (B, C, H, W)
 
-        # Interpolate back to original size
-        rgb_final = F.interpolate(rgb_spatial, size=(h, w), mode='bilinear')
-        thermal_final = F.interpolate(thermal_spatial, size=(h, w), mode='bilinear')
+        rgb_final = F.interpolate(rgb_spatial, size=(h, w), mode='bilinear', align_corners=False)
+        thermal_final = F.interpolate(thermal_spatial, size=(h, w), mode='bilinear', align_corners=False)
         
-        # Always compute fused output
-        fused_final = rgb_final + thermal_final
+        fusion_w = F.softmax(self.fusion_weights, dim=0)
+        cross_modal = rgb_final * thermal_final
+        fused_final = (fusion_w[0] * rgb_final + 
+                    fusion_w[1] * thermal_final + 
+                    0.1 * cross_modal)
 
         if return_attn:
             attn_info = {

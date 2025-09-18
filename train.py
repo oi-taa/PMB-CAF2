@@ -951,6 +951,12 @@ def train_rgb_ir(hyp, opt, device, tb_writer=None):
 
             # end batch ------------------------------------------------------------------------------------------------
         # end epoch ----------------------------------------------------------------------------------------------------
+        # In your training loop, print fusion weights occasionally
+        if epoch % 5 == 0:
+            for name, module in model.named_modules():
+                if hasattr(module, 'fusion_weights'):
+                    weights = F.softmax(module.fusion_weights, dim=0)
+                    print(f"Epoch {epoch} - Fusion weights: RGB={weights[0]:.3f}, Thermal={weights[1]:.3f}")
 
         # Scheduler
         lr = [x['lr'] for x in optimizer.param_groups]  # for tensorboard
