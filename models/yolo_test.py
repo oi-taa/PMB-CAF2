@@ -731,11 +731,21 @@ def parse_model(d, ch):  # model_dict, input_channels(3)
             args = [c2] + args[1:] if len(args) > 1 else [c2]
         elif m is BCAM_SingleOutput:
             print(f"DEBUG: BCAM_SingleOutput module with f={f}")
-            print(f"DEBUG: Trying to access ch[{f[0]}], ch length = {len(ch)}")
-            if f[0] >= len(ch):
-                print(f"ERROR: f[0]={f[0]} >= len(ch)={len(ch)} for BCAM_SingleOutput")
+            
+            # Handle both list and integer f values
+            if isinstance(f, list):
+                f_idx = f[0]
+            else:
+                f_idx = f
+            
+            print(f"DEBUG: Trying to access ch[{f_idx}], ch length = {len(ch)}")
+            
+            if f_idx >= len(ch):
+                print(f"ERROR: f_idx={f_idx} >= len(ch)={len(ch)} for BCAM_SingleOutput")
                 print(f"ERROR: ch = {ch}")
-            c2 = ch[f[0]]
+                raise IndexError(f"Index {f_idx} out of range for ch list of length {len(ch)}")
+            
+            c2 = ch[f_idx]
             m_ = BCAM_SingleOutput(c2, output_mode='fused', *args[1:])
         elif m is UCAM:
             print(f"DEBUG: UCAM module with f={f}")
