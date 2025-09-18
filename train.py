@@ -988,14 +988,57 @@ def train_rgb_ir(hyp, opt, device, tb_writer=None):
                     mAP_small, mAP_medium, mAP_large = results[8:11]
                     
                     # For final epoch, compute efficiency metrics and save comprehensive results
+                    # For final epoch, compute efficiency metrics and save comprehensive results
                     if final_epoch:
+                        # Load the best model for final evaluation
+                        if best.exists():
+                            print(f"\n🔄 Loading best model for final evaluation...")
+                            best_ckpt = torch.load(best, map_location=device)
+                            if 'ema' in best_ckpt:
+                                # Load best EMA model
+                                ema.ema.load_state_dict(best_ckpt['ema'])
+                            else:
+                                # Load best regular model
+                                model.load_state_dict(best_ckpt['model'])
+                            
+                            # Re-run evaluation with best model
+                            best_results, best_maps, best_times = test.test(data_dict,
+                                                            batch_size=batch_size * 2,
+                                                            imgsz=imgsz_test,
+                                                            model=ema.ema,
+                                                            single_cls=opt.single_cls,
+                                                            dataloader=testloader,
+                                                            save_dir=save_dir,
+                                                            verbose=True,
+                                                            plots=plots,
+                                                            wandb_logger=wandb_logger,
+                                                            compute_loss=compute_loss,
+                                                            is_coco=is_coco)
+                            
+                            # Use best model results
+                            final_results = best_results
+                            final_times = best_times
+                            print(f"📊 Using BEST model metrics")
+                        else:
+                            final_results = results
+                            final_times = times
+                            print(f"⚠️ No best.pt found, using last epoch metrics")
+                        
+                        # Extract metrics from best model results
+                        if len(final_results) >= 11:
+                            mp, mr, map50, map75, map_avg = final_results[:5]
+                            mAP_small, mAP_medium, mAP_large = final_results[8:11]
+                        else:
+                            mp, mr, map50, map75, map_avg = final_results[:5]
+                            mAP_small = mAP_medium = mAP_large = 0.0
+                        
                         try:
                             # Compute efficiency metrics
                             efficiency_metrics = test.compute_efficiency_metrics(ema.ema, device)
                             
                             # Print comprehensive final results
                             print("\n" + "="*80)
-                            print("🎯 PMB-CAF FINAL COMPREHENSIVE RESULTS")
+                            print("🎯 PMB-CAF FINAL COMPREHENSIVE RESULTS (BEST MODEL)")
                             print("="*80)
                             print(f"Dataset: {Path(opt.data).stem}")
                             print(f"Method: PMB-CAF")
@@ -1018,10 +1061,9 @@ def train_rgb_ir(hyp, opt, device, tb_writer=None):
                             print(f"  Parameters:     {efficiency_metrics['params_M']:.2f}M")
                             print(f"  GFLOPs:         {efficiency_metrics['gflops']:.2f}")
                             print(f"  FPS:            {efficiency_metrics['fps']:.1f}")
-                            print(f"  Inference Time: {efficiency_metrics['inference_time_ms']:.2f}ms")
                             
                             print(f"\n🚀 Speed Breakdown:")
-                            inf_time, nms_time, total_time = times[:3]
+                            inf_time, nms_time, total_time = final_times[:3]
                             print(f"  Inference:      {inf_time:.1f}ms")
                             print(f"  NMS:            {nms_time:.1f}ms")
                             print(f"  Total:          {total_time:.1f}ms")
@@ -1032,98 +1074,30 @@ def train_rgb_ir(hyp, opt, device, tb_writer=None):
                             print(f"PMB-CAF         | {map50:.3f}  | {map75:.3f}  | {map_avg:.3f}      | {mAP_small:.3f} | {mAP_medium:.3f} | {mAP_large:.3f} | {efficiency_metrics['params_M']:.1f}M   | {efficiency_metrics['gflops']:.1f}    | {efficiency_metrics['fps']:.0f}")
                             print("="*80)
                             
-                            # Save comprehensive metrics to multiple formats
+                            # Save best model metrics
                             import json
-                            import pandas as pd
-                            
-                            # Create comprehensive metrics dictionary
-                            final_metrics = {
-                                'experiment_info': {
-                                    'dataset': Path(opt.data).stem,
-                                    'method': 'PMB-CAF',
-                                    'model_config': opt.cfg,
-                                    'epochs': epoch + 1,
-                                    'batch_size': opt.batch_size,
-                                    'image_size': imgsz_test,
-                                    'timestamp': time.strftime('%Y-%m-%d %H:%M:%S')
-                                },
-                                'detection_performance': {
-                                    'mAP@50': float(map50),
-                                    'mAP@75': float(map75),
-                                    'mAP@[0.5:0.95]': float(map_avg),
-                                    'precision': float(mp),
-                                    'recall': float(mr)
-                                },
-                                'size_based_performance': {
-                                    'mAP_small': float(mAP_small),
-                                    'mAP_medium': float(mAP_medium),
-                                    'mAP_large': float(mAP_large)
-                                },
-                                'efficiency_metrics': {
-                                    'parameters_M': efficiency_metrics['params_M'],
-                                    'gflops': efficiency_metrics['gflops'],
-                                    'fps': efficiency_metrics['fps'],
-                                    'inference_time_ms': efficiency_metrics['inference_time_ms']
-                                },
-                                'speed_breakdown': {
-                                    'inference_ms': float(inf_time),
-                                    'nms_ms': float(nms_time),
-                                    'total_ms': float(total_time)
-                                }
+                            best_model_metrics = {
+                                'model_type': 'BEST',
+                                'mAP@0.5': float(map50),
+                                'mAP@0.75': float(map75),
+                                'mAP@0.5:0.95': float(map_avg),
+                                'precision': float(mp),
+                                'recall': float(mr),
+                                'mAP_small': float(mAP_small),
+                                'mAP_medium': float(mAP_medium),
+                                'mAP_large': float(mAP_large),
+                                'params_M': efficiency_metrics['params_M'],
+                                'gflops': efficiency_metrics['gflops'],
+                                'fps': efficiency_metrics['fps']
                             }
                             
-                            # Save to JSON
-                            json_path = save_dir / 'final_comprehensive_results.json'
-                            with open(json_path, 'w') as f:
-                                json.dump(final_metrics, f, indent=2)
+                            with open(save_dir / 'best_model_final_metrics.json', 'w') as f:
+                                json.dump(best_model_metrics, f, indent=2)
                             
-                            # Save to CSV for easy table creation
-                            csv_data = {
-                                'Method': ['PMB-CAF'],
-                                'Dataset': [Path(opt.data).stem],
-                                'mAP@50': [map50],
-                                'mAP@75': [map75],
-                                'mAP@[0.5:0.95]': [map_avg],
-                                'mAP_small': [mAP_small],
-                                'mAP_medium': [mAP_medium],
-                                'mAP_large': [mAP_large],
-                                'Params_M': [efficiency_metrics['params_M']],
-                                'GFLOPs': [efficiency_metrics['gflops']],
-                                'FPS': [efficiency_metrics['fps']],
-                                'Inference_ms': [inf_time],
-                                'NMS_ms': [nms_time],
-                                'Total_ms': [total_time]
-                            }
-                            
-                            df = pd.DataFrame(csv_data)
-                            csv_path = save_dir / 'results_table.csv'
-                            df.to_csv(csv_path, index=False)
-                            
-                            # Save a simple summary for quick reference
-                            summary_path = save_dir / 'results_summary.txt'
-                            with open(summary_path, 'w') as f:
-                                f.write("PMB-CAF Evaluation Results\n")
-                                f.write("=" * 50 + "\n")
-                                f.write(f"Dataset: {Path(opt.data).stem}\n")
-                                f.write(f"mAP@50: {map50:.3f}\n")
-                                f.write(f"mAP@75: {map75:.3f}\n")
-                                f.write(f"mAP@[0.5:0.95]: {map_avg:.3f}\n")
-                                f.write(f"mAP_small: {mAP_small:.3f}\n")
-                                f.write(f"mAP_medium: {mAP_medium:.3f}\n")
-                                f.write(f"mAP_large: {mAP_large:.3f}\n")
-                                f.write(f"Parameters: {efficiency_metrics['params_M']:.2f}M\n")
-                                f.write(f"GFLOPs: {efficiency_metrics['gflops']:.2f}\n")
-                                f.write(f"FPS: {efficiency_metrics['fps']:.1f}\n")
-                            
-                            print(f"\n💾 Results saved to:")
-                            print(f"  📄 JSON: {json_path}")
-                            print(f"  📊 CSV:  {csv_path}")
-                            print(f"  📝 TXT:  {summary_path}")
+                            print(f"\n📊 BEST model metrics saved to {save_dir / 'best_model_final_metrics.json'}")
                             
                         except Exception as e:
-                            print(f"Warning: Could not compute efficiency metrics: {e}")
-                            import traceback
-                            traceback.print_exc()
+                            print(f"Error computing final metrics: {e}")
                 else:
                     # Handle case where enhanced results are not available
                     mp, mr, map50, map75, map_avg = results[:5] if len(results) >= 5 else (0, 0, 0, 0, 0)
