@@ -1,0 +1,94 @@
+# PMB-CAF: Simplified Progressive Multi-Scale BCAM
+# Hybrid approach: Single BCAM + Simple Progressive Context Passing
+# Based on successful hierarchical cascade (0.754 mAP baseline)
+
+nc: 3
+depth_multiple: 1.00  # YOLOv5l
+width_multiple: 1.00
+
+anchors:
+  - [10,13, 16,30, 33,23]   # P3/8
+  - [30,61, 62,45, 59,119]  # P4/16
+  - [116,90, 156,198, 373,326]  # P5/32
+
+backbone:
+  [
+    ######### Dual Streams (0-19) #############
+    # RGB Stream: 0-9
+    [-1, 1, Focus, [64, 3]],        # 0
+    [-1, 1, Conv, [128, 3, 2]],     # 1-P2/4
+    [-1, 3, C3, [128]],             # 2
+    [-1, 1, Conv, [256, 3, 2]],     # 3-P3/8
+    [-1, 9, C3, [256]],             # 4 - RGB P3
+    [-1, 1, Conv, [512, 3, 2]],     # 5-P4/16
+    [-1, 9, C3, [512]],             # 6 - RGB P4
+    [-1, 1, Conv, [1024, 3, 2]],    # 7-P5/32
+    [-1, 1, SPP, [1024, [5, 9, 13]]], # 8
+    [-1, 3, C3, [1024, False]],     # 9 - RGB P5
+
+    # Thermal Stream: 10-19
+    [-4, 1, Focus, [64, 3]],        # 10
+    [-1, 1, Conv, [128, 3, 2]],     # 11-P2/4
+    [-1, 3, C3, [128]],             # 12
+    [-1, 1, Conv, [256, 3, 2]],     # 13-P3/8
+    [-1, 9, C3, [256]],             # 14 - Thermal P3
+    [-1, 1, Conv, [512, 3, 2]],     # 15-P4/16
+    [-1, 9, C3, [512]],             # 16 - Thermal P4
+    [-1, 1, Conv, [1024, 3, 2]],    # 17-P5/32
+    [-1, 1, SPP, [1024, [5, 9, 13]]], # 18
+    [-1, 3, C3, [1024, False]],     # 19 - Thermal P5
+
+    ######### Progressive BCAM (Simplified) #############
+    
+    # Step 1: P5 BCAM (establish semantic context)
+    [[9,19], 1, BCAM_SingleOutput, [1024]],         # 20: P5 fused
+    
+    # Step 2: Progressive P4 (RGB + Thermal + P5 context)
+    [20, 1, Conv, [512, 1, 1]],                     # 21: Project P5 context (1024→512)
+    [-1, 1, nn.Upsample, [None, 2, 'nearest']],     # 22: Upsample P5 to P4 size
+    
+    # Concatenate RGB_P4 + Thermal_P4 + P5_context → Single BCAM
+    [[6, 16, 22], 1, Concat, [1]],                  # 23: Cat (512+512+512=1536ch)
+    [-1, 1, Conv, [1024, 1, 1]],                    # 24: Project (1536→1024)
+    [-1, 1, BCAM_SingleOutput, [512]],              # 25: P4 BCAM with P5 context
+    
+    # Step 3: Progressive P3 (RGB + Thermal + P4 context) 
+    [25, 1, Conv, [256, 1, 1]],                     # 26: Project P4 result (512→256)
+    [-1, 1, nn.Upsample, [None, 2, 'nearest']],     # 27: Upsample P4 to P3 size
+    
+    # Concatenate RGB_P3 + Thermal_P3 + P4_context → Single BCAM
+    [[4, 14, 27], 1, Concat, [1]],                  # 28: Cat (256+256+256=768ch)
+    [-1, 1, Conv, [512, 1, 1]],                     # 29: Project (768→512)
+    [-1, 1, BCAM_SingleOutput, [256]],              # 30: P3 BCAM with P4 context
+  ]
+
+head:
+  [
+    ######### Use Progressive Outputs #############
+    # P5 path: Use BCAM-fused P5
+    [20, 1, Conv, [512, 1, 1]],                     # 31: Project P5 
+    [-1, 1, nn.Upsample, [None, 2, 'nearest']],     # 32: P5 upsample
+    
+    # P4 path: Use progressive P4  
+    [25, 1, Conv, [256, 1, 1]],                     # 33: Project P4 progressive
+    [[32, 33], 1, Concat, [1]],                     # 34: Concat P5_up + P4_prog (768ch)
+    [-1, 3, C3, [512, False]],                      # 35: Process P4
+    
+    # P3 path: Use progressive P3
+    [-1, 1, Conv, [256, 1, 1]],                     # 36: Project for P3
+    [-1, 1, nn.Upsample, [None, 2, 'nearest']],     # 37: Upsample to P3
+    [30, 1, Conv, [256, 1, 1]],                     # 38: Project P3 progressive
+    [[37, 38], 1, Concat, [1]],                     # 39: Concat P4_up + P3_prog (512ch)
+    [-1, 3, C3, [256, False]],                      # 40: P3 final
+
+    # Downsample path
+    [-1, 1, Conv, [256, 3, 2]],                     # 41: P3→P4 down
+    [[41, 35], 1, Concat, [1]],                     # 42: Cat with P4 path
+    [-1, 3, C3, [512, False]],                      # 43: P4 final
+
+    [-1, 1, Conv, [512, 3, 2]],                     # 44: P4→P5 down
+    [[44, 31], 1, Concat, [1]],                     # 45: Cat with P5 path
+    [-1, 3, C3, [1024, False]],                     # 46: P5 final
+
+    [[40, 43, 46], 1, Detect, [nc, anchors]],       # Detection heads
+  ]
