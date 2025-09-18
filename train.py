@@ -992,16 +992,27 @@ def train_rgb_ir(hyp, opt, device, tb_writer=None):
                     if final_epoch:
                         # Load the best model for final evaluation
                         # Load the best model for final evaluation
+                        # Load the best model for final evaluation
                         if best.exists():
                             print(f"\n🔄 Loading best model for final evaluation...")
                             try:
                                 best_ckpt = torch.load(best, map_location=device, weights_only=False)
-                                if 'ema' in best_ckpt:
-                                    # Load best EMA model
-                                    ema.ema.load_state_dict(best_ckpt['ema'])
+                                
+                                # Handle different checkpoint formats
+                                if isinstance(best_ckpt, dict):
+                                    if 'ema' in best_ckpt:
+                                        ema.ema.load_state_dict(best_ckpt['ema'])
+                                    elif 'model' in best_ckpt:
+                                        if hasattr(best_ckpt['model'], 'state_dict'):
+                                            # Model object stored
+                                            model.load_state_dict(best_ckpt['model'].state_dict())
+                                        else:
+                                            # State dict stored
+                                            model.load_state_dict(best_ckpt['model'])
                                 else:
-                                    # Load best regular model
-                                    model.load_state_dict(best_ckpt['model'])
+                                    # Direct model object
+                                    if hasattr(best_ckpt, 'state_dict'):
+                                        model.load_state_dict(best_ckpt.state_dict())
                                 
                                 # Re-run evaluation with best model
                                 best_results, best_maps, best_times = test.test(data_dict,
@@ -1029,7 +1040,6 @@ def train_rgb_ir(hyp, opt, device, tb_writer=None):
                         else:
                             final_results = results
                             final_times = times
-                            print(f"⚠️ No best.pt found, using last epoch metrics")
                         
                         # Extract metrics from best model results
                         if len(final_results) >= 11:
