@@ -697,13 +697,45 @@ def train_rgb_ir(hyp, opt, device, tb_writer=None):
     # Replace the problematic section in train_rgb_ir function around line 671
 
     # Resume
-    # Resume - CORRECTED VERSION
+    # Resume - SAFE / CORRECTED VERSION
     start_epoch, best_fitness = 0, 0.0
     if pretrained:
-        # Optimizer
-        if ckpt.get('optimizer') is not None:
-            optimizer.load_state_dict(ckpt['optimizer'])
-            best_fitness = ckpt.get('best_fitness', 0.0)
+        # Optimizer (safe load)
+        opt_sd_saved = ckpt.get('optimizer', None)
+        if opt_sd_saved is not None:
+            try:
+                optimizer.load_state_dict(opt_sd_saved)
+                best_fitness = ckpt.get('best_fitness', 0.0)
+                print("Loaded optimizer state from checkpoint.")
+            except ValueError as e:
+                # Typical cause: different number of parameter groups (model/param-grouping changed)
+                print("Optimizer state mismatch:", e)
+                print("Adapting saved optimizer state to current optimizer (dropping per-parameter buffers)...")
+
+                # Build adapted state dict using current param_groups but clear per-parameter state
+                cur_sd = optimizer.state_dict()
+                new_opt_sd = {'state': {}, 'param_groups': cur_sd['param_groups']}
+
+                # If saved groups match current count 1:1, try to copy simple hyperparams
+                saved_groups = opt_sd_saved.get('param_groups', [])
+                if len(saved_groups) == len(new_opt_sd['param_groups']):
+                    for i, g in enumerate(new_opt_sd['param_groups']):
+                        for k in ('lr', 'weight_decay', 'eps', 'betas', 'momentum'):
+                            if k in saved_groups[i]:
+                                g[k] = saved_groups[i][k]
+                    print("Copied simple hyperparameters (lr/weight_decay/...) from saved optimizer groups (1:1).")
+                else:
+                    print("Saved/current param_group counts differ — keeping current hyperparameters.")
+
+                # Attempt to load adapted dict; on failure continue with fresh optimizer
+                try:
+                    optimizer.load_state_dict(new_opt_sd)
+                    best_fitness = ckpt.get('best_fitness', 0.0)
+                    print("Loaded adapted optimizer state (per-parameter state cleared).")
+                except Exception as ex2:
+                    print("Could not load adapted optimizer state; proceeding with fresh optimizer. Error:", ex2)
+        else:
+            print("No optimizer state found in checkpoint; starting with a fresh optimizer.")
 
         # EMA
         if ema and ckpt.get('ema'):
@@ -716,7 +748,7 @@ def train_rgb_ir(hyp, opt, device, tb_writer=None):
 
         # Epochs - FIXED LOGIC
         start_epoch = ckpt.get('epoch', -1) + 1
-        
+
         if opt.resume:
             logger.info(f'Resuming training from epoch {start_epoch} to {epochs}')
             assert start_epoch < epochs, f'Cannot resume: checkpoint at epoch {start_epoch-1} >= target epochs {epochs}'
@@ -726,6 +758,7 @@ def train_rgb_ir(hyp, opt, device, tb_writer=None):
             logger.info(f'Fine-tuning from pretrained weights, training for {epochs} epochs')
 
         del ckpt, state_dict
+
 
     # Image sizes
     gs = max(int(model.stride.max()), 32)  # grid size (max stride)
