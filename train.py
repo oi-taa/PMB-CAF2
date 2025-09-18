@@ -697,36 +697,33 @@ def train_rgb_ir(hyp, opt, device, tb_writer=None):
     # Replace the problematic section in train_rgb_ir function around line 671
 
     # Resume
+    # Resume - CORRECTED VERSION
     start_epoch, best_fitness = 0, 0.0
     if pretrained:
         # Optimizer
-        if ckpt['optimizer'] is not None:
+        if ckpt.get('optimizer') is not None:
             optimizer.load_state_dict(ckpt['optimizer'])
-            best_fitness = ckpt['best_fitness']
+            best_fitness = ckpt.get('best_fitness', 0.0)
 
         # EMA
         if ema and ckpt.get('ema'):
             ema.ema.load_state_dict(ckpt['ema'].float().state_dict())
-            ema.updates = ckpt['updates']
+            ema.updates = ckpt.get('updates', 0)
 
         # Results
         if ckpt.get('training_results') is not None:
-            results_file.write_text(ckpt['training_results'])  # write results.txt
+            results_file.write_text(ckpt['training_results'])
 
         # Epochs - FIXED LOGIC
-        start_epoch = ckpt['epoch'] + 1
+        start_epoch = ckpt.get('epoch', -1) + 1
+        
         if opt.resume:
-            if epochs <= ckpt['epoch']:
-                logger.info('%s has been trained for %g epochs. Fine-tuning for %g additional epochs.' %
-                            (weights, ckpt['epoch'], epochs))
-                epochs += ckpt['epoch']  # finetune additional epochs
-            else:
-                logger.info('Resuming training from epoch %g to epoch %g' % (start_epoch, epochs))
+            logger.info(f'Resuming training from epoch {start_epoch} to {epochs}')
+            assert start_epoch < epochs, f'Cannot resume: checkpoint at epoch {start_epoch-1} >= target epochs {epochs}'
         else:
-            if epochs < start_epoch:
-                logger.info('%s has been trained for %g epochs. Fine-tuning for %g additional epochs.' %
-                            (weights, ckpt['epoch'], epochs))
-                epochs += ckpt['epoch']  # finetune additional epochs
+            # Fine-tuning: reset start_epoch but keep model weights
+            start_epoch = 0
+            logger.info(f'Fine-tuning from pretrained weights, training for {epochs} epochs')
 
         del ckpt, state_dict
 
