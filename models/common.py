@@ -240,7 +240,7 @@ class Concat(nn.Module):
     def forward(self, x):
         # print(x.shape)
         return torch.cat(x, self.d)
-
+            
 
 class Add(nn.Module):
     #  Add two tensors
@@ -572,38 +572,6 @@ class myTransformerBlock(nn.Module):
         return x
 # Add this to models/common.py - Replace the existing Concat class
 
-class Concat(nn.Module):
-    # Concatenate a list of tensors along dimension
-    def __init__(self, dimension=1):
-        super(Concat, self).__init__()
-        self.d = dimension
-
-    def forward(self, x):
-        # DEBUG: Print tensor shapes before concatenation
-        print(f"\n🔍 CONCAT DEBUG:")
-        print(f"  Dimension: {self.d}")
-        print(f"  Number of tensors: {len(x)}")
-        for i, tensor in enumerate(x):
-            print(f"  Tensor {i}: {tensor.shape}")
-        
-        # Check for size mismatches
-        if len(x) > 1:
-            ref_shape = x[0].shape
-            for i, tensor in enumerate(x[1:], 1):
-                if tensor.shape[2:] != ref_shape[2:]:  # Compare spatial dimensions
-                    print(f"  ❌ SIZE MISMATCH: Tensor 0 {ref_shape[2:]} vs Tensor {i} {tensor.shape[2:]}")
-                    print(f"  ❌ FAILING CONCATENATION")
-                    # Print more debug info
-                    import traceback
-                    traceback.print_stack()
-                    
-        try:
-            result = torch.cat(x, self.d)
-            print(f"  ✅ SUCCESS: Result shape {result.shape}")
-            return result
-        except Exception as e:
-            print(f"  ❌ CONCAT FAILED: {e}")
-            raise e
 
 class GPT(nn.Module):
     """  the full GPT language model, with a context size of block_size """
