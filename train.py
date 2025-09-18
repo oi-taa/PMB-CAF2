@@ -93,6 +93,12 @@ def train(hyp, opt, device, tb_writer=None):
             attempt_download(weights)  # download if not found locally
         ckpt = torch.load(weights, map_location=device, weights_only=False)  # load checkpoint
         model = Model(opt.cfg or ckpt['model'].yaml, ch=3, nc=nc, anchors=hyp.get('anchors')).to(device)  # create
+        print(f"\n🔧 Model Architecture Check:")
+        print(f"Config file: {opt.cfg}")
+        for i, layer in enumerate(model.model):
+            print(f"Layer {i}: {type(layer).__name__}")
+            if hasattr(layer, 'type'):
+                print(f"  Type: {layer.type}")
         exclude = ['anchor'] if (opt.cfg or hyp.get('anchors')) and not opt.resume else []  # exclude keys
         state_dict = ckpt['model'].float().state_dict()  # to FP32
         state_dict = intersect_dicts(state_dict, model.state_dict(), exclude=exclude)  # intersect
@@ -100,6 +106,12 @@ def train(hyp, opt, device, tb_writer=None):
         logger.info('Transferred %g/%g items from %s' % (len(state_dict), len(model.state_dict()), weights))  # report
     else:
         model = Model(opt.cfg, ch=3, nc=nc, anchors=hyp.get('anchors')).to(device)  # create
+        print(f"\n🔧 Model Architecture Check:")
+        print(f"Config file: {opt.cfg}")
+        for i, layer in enumerate(model.model):
+            print(f"Layer {i}: {type(layer).__name__}")
+            if hasattr(layer, 'type'):
+                print(f"  Type: {layer.type}")
         total_params = sum(p.numel() for p in model.parameters())
         bcam_params = sum(p.numel() for name, p in model.named_parameters() if 'bcam' in name.lower())
         print(f"🔍 PARAMETER DEBUG:")
@@ -859,18 +871,37 @@ def train_rgb_ir(hyp, opt, device, tb_writer=None):
                     print("  ❌ NO BCAM modules found in model!")
                 
                 # Check all parameters with 'bcam' in name
+                # Check parameters from BCAM modules (model.20, model.21, model.22)
                 bcam_params = 0
+                bcam_modules = ['model.20', 'model.21', 'model.22']
+
+                print(f"  Looking for BCAM parameters in modules: {bcam_modules}")
+
                 for name, param in model.named_parameters():
-                    if 'bcam' in name.lower():
+                    # Check if parameter belongs to BCAM modules
+                    is_bcam_param = any(name.startswith(module_name + '.') for module_name in bcam_modules)
+                    
+                    if is_bcam_param:
                         bcam_params += 1
                         grad_status = "HAS_GRAD" if param.grad is not None else "NO_GRAD"
                         if param.grad is not None:
                             grad_norm = param.grad.norm().item()
-                            print(f"  {name}: {grad_status} norm={grad_norm:.6f}")
+                            param_norm = param.data.norm().item()
+                            print(f"  {name}: {grad_status} grad_norm={grad_norm:.6f} param_norm={param_norm:.6f}")
                         else:
                             print(f"  {name}: {grad_status}")
-                
+
                 print(f"  Total BCAM parameters found: {bcam_params}")
+
+                # Also print a few non-BCAM parameters for comparison
+                print(f"  \n  Comparison - Some backbone parameters:")
+                backbone_count = 0
+                for name, param in model.named_parameters():
+                    if not any(name.startswith(module_name + '.') for module_name in bcam_modules) and backbone_count < 3:
+                        if param.grad is not None:
+                            grad_norm = param.grad.norm().item()
+                            print(f"  {name}: grad_norm={grad_norm:.6f}")
+                            backbone_count += 1
 
             # Optimize
             if ni % accumulate == 0:
