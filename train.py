@@ -845,6 +845,17 @@ def train_rgb_ir(hyp, opt, device, tb_writer=None):
 
             # Backward
             scaler.scale(loss).backward()
+            if i % 10 == 0:  # Every 100 batches
+                print(f"\n🔍 Epoch {epoch}, Batch {i} - Gradient Check:")
+                for name, param in model.named_parameters():
+                    if param.grad is not None and any(keyword in name.lower() for keyword in ['bcam', 'attention']):
+                        grad_norm = param.grad.norm().item()
+                        if grad_norm < 1e-7:
+                            print(f"  ⚠️ {name}: {grad_norm:.2e} (VANISHING)")
+                        elif grad_norm > 10:
+                            print(f"  🔥 {name}: {grad_norm:.2e} (EXPLODING)")
+                        else:
+                            print(f"  ✅ {name}: {grad_norm:.4f}")
 
             # Optimize
             if ni % accumulate == 0:
