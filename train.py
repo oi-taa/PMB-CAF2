@@ -649,6 +649,9 @@ def train_rgb_ir(hyp, opt, device, tb_writer=None):
     ema = ModelEMA(model) if rank in [-1, 0] else None
 
     # Resume
+    # Replace the problematic section in train_rgb_ir function around line 671
+
+    # Resume
     start_epoch, best_fitness = 0, 0.0
     if pretrained:
         # Optimizer
@@ -665,10 +668,11 @@ def train_rgb_ir(hyp, opt, device, tb_writer=None):
         if ckpt.get('training_results') is not None:
             results_file.write_text(ckpt['training_results'])  # write results.txt
 
-        # Epochs
+        # Epochs - FIXED LOGIC
         start_epoch = ckpt['epoch'] + 1
         if opt.resume:
-            assert start_epoch > 0, '%s training to %g epochs is finished, nothing to resume.' % (weights, epochs)
+            # Fix: Check if we're trying to resume training that's already finished
+            assert epochs > ckpt['epoch'], '%s training to %g epochs is finished, nothing to resume. Set --epochs > %g' % (weights, epochs, ckpt['epoch'])
         if epochs < start_epoch:
             logger.info('%s has been trained for %g epochs. Fine-tuning for %g additional epochs.' %
                         (weights, ckpt['epoch'], epochs))
