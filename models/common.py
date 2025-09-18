@@ -767,13 +767,7 @@ class BCAM(nn.Module):
             # average attention across heads -> (B, L, L)
             if return_attn:
                 attn_avg = attn_weights.mean(dim=1)
-                
-                # ADD THIS DEBUG:
-                print(f"🎯 ATTENTION DEBUG:")
-                print(f"  Attn weights shape: {attn_weights.shape}")
-                print(f"  Mean attention: {attn_weights.mean():.4f}")
-                print(f"  Attention std: {attn_weights.std():.4f}")
-                print(f"  Max attention: {attn_weights.max():.4f}")
+               
                 
                 return attended, attn_avg
         return attended
@@ -847,11 +841,11 @@ class BCAM(nn.Module):
 
         thermal_attended = self.thermal_out(thermal_attended)  # (B, L, C)
         thermal_tokens = thermal_tokens + 0.1 * thermal_attended      # Residual connection
-        print(f"🎯 ATTENTION DEBUG:")
+        '''print(f"🎯 ATTENTION DEBUG:")
         print(f"  RGB features: min={rgb_q.min():.3f}, max={rgb_q.max():.3f}, mean={rgb_q.mean():.3f}")
         print(f"  Thermal K: min={thermal_k.min():.3f}, max={thermal_k.max():.3f}, mean={thermal_k.mean():.3f}")
         print(f"  RGB attended: min={rgb_attended.min():.3f}, max={rgb_attended.max():.3f}, mean={rgb_attended.mean():.3f}")
-        print(f"  Thermal attended: min={thermal_attended.min():.3f}, max={thermal_attended.max():.3f}, mean={thermal_attended.mean():.3f}")
+        print(f"  Thermal attended: min={thermal_attended.min():.3f}, max={thermal_attended.max():.3f}, mean={thermal_attended.mean():.3f}")'''
 
         # Feed-forward networks on TOKENS (pre-norm)
         rgb_tokens = rgb_tokens + self.rgb_ffn(self.rgb_norm2(rgb_tokens))          # (B, L, C)
@@ -1161,13 +1155,7 @@ class BCAM_Progressive(BCAM):
         When return_attn=True: returns ((rgb, thermal, fused), attn_info)
         """
         rgb_fea, thermal_fea = x[0], x[1]
-        print(f"🔍 BCAM_Progressive DEBUG:")
-        if coarse_context is not None:
-            print(f"  ✅ Coarse context: {coarse_context.shape}")
-            is_zeros = torch.allclose(coarse_context, torch.zeros_like(coarse_context), atol=1e-6)
-            print(f"  📊 Stats: min={coarse_context.min():.3f}, max={coarse_context.max():.3f}, is_zeros={is_zeros}")
-        else:
-            print(f"  ❌ No coarse context provided")
+        
 
         # Interface checks
         assert rgb_fea.shape[1] == self.d_model and thermal_fea.shape[1] == self.d_model, \
