@@ -624,29 +624,62 @@ def train_rgb_ir(hyp, opt, device, tb_writer=None):
             v.requires_grad = False
 
     # Optimizer
+    # Optimizer
     nbs = 64  # nominal batch size
     accumulate = max(round(nbs / total_batch_size), 1)  # accumulate loss before optimizing
     hyp['weight_decay'] *= total_batch_size * accumulate / nbs  # scale weight_decay
     logger.info(f"Scaled weight_decay = {hyp['weight_decay']}")
 
-    pg0, pg1, pg2 = [], [], []  # optimizer parameter groups
+    # BCAM-specific parameter grouping
+    pos_embed_params = []
+    other_bcam_params = []
+    backbone_pg0, backbone_pg1, backbone_pg2 = [], [], []  # backbone parameter groups
+
+    bcam_modules = ['model.20', 'model.21', 'model.22']
+
     for k, v in model.named_modules():
-        if hasattr(v, 'bias') and isinstance(v.bias, nn.Parameter):
-            pg2.append(v.bias)  # biases
-        if isinstance(v, nn.BatchNorm2d):
-            pg0.append(v.weight)  # no decay
-        elif hasattr(v, 'weight') and isinstance(v.weight, nn.Parameter):
-            pg1.append(v.weight)  # apply decay
+        # Check if this is a BCAM module
+        is_bcam = any(k.startswith(module_name + '.') for module_name in bcam_modules)
+        
+        if not is_bcam:
+            # Standard backbone parameter grouping
+            if hasattr(v, 'bias') and isinstance(v.bias, nn.Parameter):
+                backbone_pg2.append(v.bias)  # biases
+            if isinstance(v, nn.BatchNorm2d):
+                backbone_pg0.append(v.weight)  # no decay
+            elif hasattr(v, 'weight') and isinstance(v.weight, nn.Parameter):
+                backbone_pg1.append(v.weight)  # apply decay
+
+    # Separate BCAM parameters by type
+    for name, param in model.named_parameters():
+        is_bcam_param = any(name.startswith(module_name + '.') for module_name in bcam_modules)
+        
+        if is_bcam_param:
+            if 'pos_embed' in name:
+                pos_embed_params.append(param)
+            else:
+                other_bcam_params.append(param)
 
     if opt.adam:
-        optimizer = optim.Adam(pg0, lr=hyp['lr0'], betas=(hyp['momentum'], 0.999))  # adjust beta1 to momentum
+        optimizer = optim.Adam([
+            {'params': backbone_pg0, 'lr': hyp['lr0']},                    # backbone no decay
+            {'params': backbone_pg1, 'weight_decay': hyp['weight_decay']}, # backbone with decay  
+            {'params': backbone_pg2},                                      # backbone biases
+            {'params': pos_embed_params, 'lr': hyp['lr0'] * 0.01},       # pos embeddings 100x smaller
+            {'params': other_bcam_params, 'lr': hyp['lr0'] * 0.1}        # other BCAM 10x smaller
+        ], lr=hyp['lr0'], betas=(hyp['momentum'], 0.999))
     else:
-        optimizer = optim.SGD(pg0, lr=hyp['lr0'], momentum=hyp['momentum'], nesterov=True)
+        optimizer = optim.SGD([
+            {'params': backbone_pg0, 'lr': hyp['lr0']},                    
+            {'params': backbone_pg1, 'weight_decay': hyp['weight_decay']},   
+            {'params': backbone_pg2},                                        
+            {'params': pos_embed_params, 'lr': hyp['lr0'] * 0.01},       
+            {'params': other_bcam_params, 'lr': hyp['lr0'] * 0.1}        
+        ], lr=hyp['lr0'], momentum=hyp['momentum'], nesterov=True)
 
-    optimizer.add_param_group({'params': pg1, 'weight_decay': hyp['weight_decay']})  # add pg1 with weight_decay
-    optimizer.add_param_group({'params': pg2})  # add pg2 (biases)
-    logger.info('Optimizer groups: %g .bias, %g conv.weight, %g other' % (len(pg2), len(pg1), len(pg0)))
-    del pg0, pg1, pg2
+    logger.info('Optimizer groups: %g backbone.bias, %g backbone.conv, %g backbone.other, %g pos_embed, %g bcam_other' % 
+                (len(backbone_pg2), len(backbone_pg1), len(backbone_pg0), len(pos_embed_params), len(other_bcam_params)))
+    del backbone_pg0, backbone_pg1, backbone_pg2
 
     # Scheduler https://arxiv.org/pdf/1812.01187.pdf
     # https://pytorch.org/docs/stable/_modules/torch/optim/lr_scheduler.html#OneCycleLR
