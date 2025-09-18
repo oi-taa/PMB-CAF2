@@ -845,17 +845,32 @@ def train_rgb_ir(hyp, opt, device, tb_writer=None):
 
             # Backward
             scaler.scale(loss).backward()
-            if i % 10 == 0:  # Every 100 batches
-                print(f"\n🔍 Epoch {epoch}, Batch {i} - Gradient Check:")
+            if i % 100 == 0:
+                print(f"\n🔍 Epoch {epoch}, Batch {i} - BCAM Debug:")
+                
+                # First, let's see if BCAM modules exist
+                bcam_found = False
+                for name, module in model.named_modules():
+                    if 'bcam' in str(type(module)).lower():
+                        bcam_found = True
+                        print(f"  Found BCAM module: {name} - {type(module)}")
+                
+                if not bcam_found:
+                    print("  ❌ NO BCAM modules found in model!")
+                
+                # Check all parameters with 'bcam' in name
+                bcam_params = 0
                 for name, param in model.named_parameters():
-                    if param.grad is not None and any(keyword in name.lower() for keyword in ['bcam', 'attention']):
-                        grad_norm = param.grad.norm().item()
-                        if grad_norm < 1e-7:
-                            print(f"  ⚠️ {name}: {grad_norm:.2e} (VANISHING)")
-                        elif grad_norm > 10:
-                            print(f"  🔥 {name}: {grad_norm:.2e} (EXPLODING)")
+                    if 'bcam' in name.lower():
+                        bcam_params += 1
+                        grad_status = "HAS_GRAD" if param.grad is not None else "NO_GRAD"
+                        if param.grad is not None:
+                            grad_norm = param.grad.norm().item()
+                            print(f"  {name}: {grad_status} norm={grad_norm:.6f}")
                         else:
-                            print(f"  ✅ {name}: {grad_norm:.4f}")
+                            print(f"  {name}: {grad_status}")
+                
+                print(f"  Total BCAM parameters found: {bcam_params}")
 
             # Optimize
             if ni % accumulate == 0:
