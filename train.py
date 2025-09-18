@@ -991,34 +991,41 @@ def train_rgb_ir(hyp, opt, device, tb_writer=None):
                     # For final epoch, compute efficiency metrics and save comprehensive results
                     if final_epoch:
                         # Load the best model for final evaluation
+                        # Load the best model for final evaluation
                         if best.exists():
                             print(f"\n🔄 Loading best model for final evaluation...")
-                            best_ckpt = torch.load(best, map_location=device)
-                            if 'ema' in best_ckpt:
-                                # Load best EMA model
-                                ema.ema.load_state_dict(best_ckpt['ema'])
-                            else:
-                                # Load best regular model
-                                model.load_state_dict(best_ckpt['model'])
-                            
-                            # Re-run evaluation with best model
-                            best_results, best_maps, best_times = test.test(data_dict,
-                                                            batch_size=batch_size * 2,
-                                                            imgsz=imgsz_test,
-                                                            model=ema.ema,
-                                                            single_cls=opt.single_cls,
-                                                            dataloader=testloader,
-                                                            save_dir=save_dir,
-                                                            verbose=True,
-                                                            plots=plots,
-                                                            wandb_logger=wandb_logger,
-                                                            compute_loss=compute_loss,
-                                                            is_coco=is_coco)
-                            
-                            # Use best model results
-                            final_results = best_results
-                            final_times = best_times
-                            print(f"📊 Using BEST model metrics")
+                            try:
+                                best_ckpt = torch.load(best, map_location=device, weights_only=False)
+                                if 'ema' in best_ckpt:
+                                    # Load best EMA model
+                                    ema.ema.load_state_dict(best_ckpt['ema'])
+                                else:
+                                    # Load best regular model
+                                    model.load_state_dict(best_ckpt['model'])
+                                
+                                # Re-run evaluation with best model
+                                best_results, best_maps, best_times = test.test(data_dict,
+                                                                batch_size=batch_size * 2,
+                                                                imgsz=imgsz_test,
+                                                                model=ema.ema,
+                                                                single_cls=opt.single_cls,
+                                                                dataloader=testloader,
+                                                                save_dir=save_dir,
+                                                                verbose=True,
+                                                                plots=plots,
+                                                                wandb_logger=wandb_logger,
+                                                                compute_loss=compute_loss,
+                                                                is_coco=is_coco)
+                                
+                                final_results = best_results
+                                final_times = best_times
+                                print(f"📊 Successfully loaded and evaluated BEST model")
+                                
+                            except Exception as e:
+                                print(f"⚠️ Error loading best.pt: {e}")
+                                print(f"📊 Using last epoch results instead")
+                                final_results = results
+                                final_times = times
                         else:
                             final_results = results
                             final_times = times
