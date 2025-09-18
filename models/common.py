@@ -847,6 +847,11 @@ class BCAM(nn.Module):
 
         thermal_attended = self.thermal_out(thermal_attended)  # (B, L, C)
         thermal_tokens = thermal_tokens + thermal_attended      # Residual connection
+        print(f"🎯 ATTENTION DEBUG:")
+        print(f"  RGB features: min={rgb_q.min():.3f}, max={rgb_q.max():.3f}, mean={rgb_q.mean():.3f}")
+        print(f"  Thermal K: min={thermal_k.min():.3f}, max={thermal_k.max():.3f}, mean={thermal_k.mean():.3f}")
+        print(f"  RGB attended: min={rgb_attended.min():.3f}, max={rgb_attended.max():.3f}, mean={rgb_attended.mean():.3f}")
+        print(f"  Thermal attended: min={thermal_attended.min():.3f}, max={thermal_attended.max():.3f}, mean={thermal_attended.mean():.3f}")
 
         # Feed-forward networks on TOKENS (pre-norm)
         rgb_tokens = rgb_tokens + self.rgb_ffn(self.rgb_norm2(rgb_tokens))          # (B, L, C)
