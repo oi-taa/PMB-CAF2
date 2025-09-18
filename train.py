@@ -671,12 +671,17 @@ def train_rgb_ir(hyp, opt, device, tb_writer=None):
         # Epochs - FIXED LOGIC
         start_epoch = ckpt['epoch'] + 1
         if opt.resume:
-            # Fix: Check if we're trying to resume training that's already finished
-            assert epochs > ckpt['epoch'], '%s training to %g epochs is finished, nothing to resume. Set --epochs > %g' % (weights, epochs, ckpt['epoch'])
-        if epochs < start_epoch:
-            logger.info('%s has been trained for %g epochs. Fine-tuning for %g additional epochs.' %
-                        (weights, ckpt['epoch'], epochs))
-            epochs += ckpt['epoch']  # finetune additional epochs
+            if epochs <= ckpt['epoch']:
+                logger.info('%s has been trained for %g epochs. Fine-tuning for %g additional epochs.' %
+                            (weights, ckpt['epoch'], epochs))
+                epochs += ckpt['epoch']  # finetune additional epochs
+            else:
+                logger.info('Resuming training from epoch %g to epoch %g' % (start_epoch, epochs))
+        else:
+            if epochs < start_epoch:
+                logger.info('%s has been trained for %g epochs. Fine-tuning for %g additional epochs.' %
+                            (weights, ckpt['epoch'], epochs))
+                epochs += ckpt['epoch']  # finetune additional epochs
 
         del ckpt, state_dict
 
