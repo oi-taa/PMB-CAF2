@@ -190,12 +190,21 @@ class Model(nn.Module):
         bcam_params = sum(p.numel() for name, p in self.named_parameters() if 'bcam' in name.lower())
         progressive_params = sum(p.numel() for name, p in self.named_parameters() if 'progressive' in name.lower())
 
-        print(f"\n🔍 PARAMETER DEBUG:")
+        print(f"\n🔍 DETAILED PARAMETER DEBUG:")
         print(f"  Total: {total_params/1e6:.1f}M")
-        print(f"  BCAM: {bcam_params/1e6:.1f}M") 
-        print(f"  Progressive: {progressive_params/1e6:.1f}M")
-        print(f"  Backbone: {(total_params-bcam_params-progressive_params)/1e6:.1f}M")
-        print(f"================================\n")
+
+        # Check all module types
+        for name, module in self.named_modules():
+            if 'BCAM' in str(type(module)):
+                params = sum(p.numel() for p in module.parameters())
+                print(f"  Found {type(module).__name__} at '{name}': {params/1e6:.2f}M params")
+
+        # Check parameter names containing attention-related terms
+        attention_params = sum(p.numel() for name, p in self.named_parameters() 
+                            if any(keyword in name.lower() for keyword in ['attn', 'attention', 'cross', 'film', 'adapter']))
+        print(f"  Attention-related params: {attention_params/1e6:.2f}M")
+
+        print("================================\n")
         # print(self.model)
         self.names = [str(i) for i in range(self.yaml['nc'])]  # default names
         # logger.info([x.shape for x in self.forward(torch.zeros(1, ch, 64, 64))])
