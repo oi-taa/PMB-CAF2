@@ -186,6 +186,16 @@ class Model(nn.Module):
             logger.info(f'Overriding model.yaml anchors with anchors={anchors}')
             self.yaml['anchors'] = round(anchors)  # override yaml value
         self.model, self.save = parse_model(deepcopy(self.yaml), ch=[ch])  # model, savelist
+        total_params = sum(p.numel() for p in self.parameters())
+        bcam_params = sum(p.numel() for name, p in self.named_parameters() if 'bcam' in name.lower())
+        progressive_params = sum(p.numel() for name, p in self.named_parameters() if 'progressive' in name.lower())
+
+        print(f"\n🔍 PARAMETER DEBUG:")
+        print(f"  Total: {total_params/1e6:.1f}M")
+        print(f"  BCAM: {bcam_params/1e6:.1f}M") 
+        print(f"  Progressive: {progressive_params/1e6:.1f}M")
+        print(f"  Backbone: {(total_params-bcam_params-progressive_params)/1e6:.1f}M")
+        print(f"================================\n")
         # print(self.model)
         self.names = [str(i) for i in range(self.yaml['nc'])]  # default names
         # logger.info([x.shape for x in self.forward(torch.zeros(1, ch, 64, 64))])
