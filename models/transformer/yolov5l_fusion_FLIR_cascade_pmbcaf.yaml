@@ -43,29 +43,26 @@ backbone:
     # Step 1: P5 BCAM (establish semantic context)
     [[9,19], 1, BCAM_SingleOutput, [1024]],         # 20: P5 fused
     
-    # Step 2: Progressive P4 (RGB + Thermal + P5 context)
-    [20, 1, Conv, [512, 1, 1]],                     # 21: Project P5 context (1024→512)
-    [-1, 1, nn.Upsample, [None, 2, 'nearest']],     # 22: Upsample P5 to P4 size
+    # Step 2: Progressive P4 - USE SIMPLER APPROACH
+    # Skip upsampling, just project P5 to match P4 channels, then use element-wise add
+    [20, 1, Conv, [512, 1, 1]],                     # 21: Project P5 (1024→512, stays 20x20)
+    [6, 1, nn.AdaptiveAvgPool2d, [20]],              # 22: Downsample RGB P4 to P5 size
+    [16, 1, nn.AdaptiveAvgPool2d, [20]],             # 23: Downsample Thermal P4 to P5 size
+    [[22, 23, 21], 1, Concat, [1]],                 # 24: Concat at P5 resolution (all 20x20)
+    [-1, 1, Conv, [1024, 1, 1]],                    # 25: Project concatenated
+    [-1, 1, Conv, [512, 1, 1]],                     # 26: Enhanced RGB P4 (at P5 res)
+    [25, 1, Conv, [512, 1, 1]],                     # 27: Enhanced Thermal P4 (at P5 res)
+    [[26, 27], 1, BCAM_SingleOutput, [512]],        # 28: P4 BCAM at P5 resolution
     
-    # Simple concatenation approach (more stable than Add)
-    [[6, 16, 22], 1, Concat, [1]],                  # 23: Cat RGB_P4 + Thermal_P4 + P5_context
-    [-1, 1, Conv, [1024, 1, 1]],                    # 24: Project concatenated features
-    # Split back into RGB and Thermal for BCAM
-    [-1, 1, Conv, [512, 1, 1]],                     # 25: Enhanced RGB P4
-    [24, 1, Conv, [512, 1, 1]],                     # 26: Enhanced Thermal P4  
-    [[25, 26], 1, BCAM_SingleOutput, [512]],        # 27: P4 BCAM
-    
-    # Step 3: Progressive P3 (RGB + Thermal + P4 context) 
-    [27, 1, Conv, [256, 1, 1]],                     # 28: Project P4 result (512→256)
-    [-1, 1, nn.Upsample, [None, 2, 'nearest']],     # 29: Upsample P4 to P3 size
-    
-    # Simple concatenation approach (more stable than Add)
-    [[4, 14, 29], 1, Concat, [1]],                  # 30: Cat RGB_P3 + Thermal_P3 + P4_context
-    [-1, 1, Conv, [512, 1, 1]],                     # 31: Project concatenated features
-    # Split back into RGB and Thermal for BCAM
-    [-1, 1, Conv, [256, 1, 1]],                     # 32: Enhanced RGB P3
-    [31, 1, Conv, [256, 1, 1]],                     # 33: Enhanced Thermal P3
-    [[32, 33], 1, BCAM_SingleOutput, [256]],        # 34: P3 BCAM
+    # Step 3: Progressive P3 - USE SIMPLER APPROACH 
+    [28, 1, Conv, [256, 1, 1]],                     # 29: Project P4 result (512→256, stays 20x20)
+    [4, 1, nn.AdaptiveAvgPool2d, [20]],              # 30: Downsample RGB P3 to P5 size  
+    [14, 1, nn.AdaptiveAvgPool2d, [20]],             # 31: Downsample Thermal P3 to P5 size
+    [[30, 31, 29], 1, Concat, [1]],                 # 32: Concat at P5 resolution (all 20x20)
+    [-1, 1, Conv, [512, 1, 1]],                     # 33: Project concatenated
+    [-1, 1, Conv, [256, 1, 1]],                     # 34: Enhanced RGB P3 (at P5 res)
+    [33, 1, Conv, [256, 1, 1]],                     # 35: Enhanced Thermal P3 (at P5 res)
+    [[34, 35], 1, BCAM_SingleOutput, [256]],        # 36: P3 BCAM at P5 resolution
   ]
 
 head:
@@ -82,7 +79,7 @@ head:
     
     # P3 path: Use progressive P3
     [-1, 1, Conv, [256, 1, 1]],                     # 39: Project for P3
-    [-1, 1, nn.Upsample, [None, 2, 'nearest']],     # 40: Upsample to P3
+    [-1, 1, nn.ConvTranspose2d, [256, 256, 4, 2, 1]], # 40: Upsample to P3
     [34, 1, Conv, [256, 1, 1]],                     # 41: Project P3 progressive
     [[40, 41], 1, Concat, [1]],                     # 42: Concat P4_up + P3_prog (512ch)
     [-1, 3, C3, [256, False]],                      # 43: P3 final
