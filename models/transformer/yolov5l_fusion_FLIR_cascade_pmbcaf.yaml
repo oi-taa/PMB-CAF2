@@ -1,6 +1,5 @@
-# PMB-CAF: Simplified Progressive Multi-Scale BCAM
-# Hybrid approach: Single BCAM + Simple Progressive Context Passing
-# Based on successful hierarchical cascade (0.754 mAP baseline)
+# PMB-CAF: Simplified Progressive Multi-Scale BCAM - FIXED INDEXING
+# All operations at P5 resolution (20x20) to avoid tensor size mismatches
 
 nc: 3
 depth_multiple: 1.00  # YOLOv5l
@@ -13,85 +12,89 @@ anchors:
 
 backbone:
   [
-    ######### Dual Streams (0-19) #############
+    ######### Dual Streams (0-19) - STANDARD YOLO #############
     # RGB Stream: 0-9
-    [-1, 1, Focus, [64, 3]],        # 0
-    [-1, 1, Conv, [128, 3, 2]],     # 1-P2/4
-    [-1, 3, C3, [128]],             # 2
-    [-1, 1, Conv, [256, 3, 2]],     # 3-P3/8
-    [-1, 9, C3, [256]],             # 4 - RGB P3
-    [-1, 1, Conv, [512, 3, 2]],     # 5-P4/16
-    [-1, 9, C3, [512]],             # 6 - RGB P4
-    [-1, 1, Conv, [1024, 3, 2]],    # 7-P5/32
-    [-1, 1, SPP, [1024, [5, 9, 13]]], # 8
-    [-1, 3, C3, [1024, False]],     # 9 - RGB P5
+    [-1, 1, Focus, [64, 3]],        # 0: (B, 64, 320, 320)
+    [-1, 1, Conv, [128, 3, 2]],     # 1: (B, 128, 160, 160)
+    [-1, 3, C3, [128]],             # 2: (B, 128, 160, 160)
+    [-1, 1, Conv, [256, 3, 2]],     # 3: (B, 256, 80, 80)
+    [-1, 9, C3, [256]],             # 4: (B, 256, 80, 80) <- RGB P3
+    [-1, 1, Conv, [512, 3, 2]],     # 5: (B, 512, 40, 40)
+    [-1, 9, C3, [512]],             # 6: (B, 512, 40, 40) <- RGB P4
+    [-1, 1, Conv, [1024, 3, 2]],    # 7: (B, 1024, 20, 20)
+    [-1, 1, SPP, [1024, [5, 9, 13]]], # 8: (B, 1024, 20, 20)
+    [-1, 3, C3, [1024, False]],     # 9: (B, 1024, 20, 20) <- RGB P5
 
     # Thermal Stream: 10-19
-    [-4, 1, Focus, [64, 3]],        # 10
-    [-1, 1, Conv, [128, 3, 2]],     # 11-P2/4
-    [-1, 3, C3, [128]],             # 12
-    [-1, 1, Conv, [256, 3, 2]],     # 13-P3/8
-    [-1, 9, C3, [256]],             # 14 - Thermal P3
-    [-1, 1, Conv, [512, 3, 2]],     # 15-P4/16
-    [-1, 9, C3, [512]],             # 16 - Thermal P4
-    [-1, 1, Conv, [1024, 3, 2]],    # 17-P5/32
-    [-1, 1, SPP, [1024, [5, 9, 13]]], # 18
-    [-1, 3, C3, [1024, False]],     # 19 - Thermal P5
+    [-4, 1, Focus, [64, 3]],        # 10: (B, 64, 320, 320)
+    [-1, 1, Conv, [128, 3, 2]],     # 11: (B, 128, 160, 160)
+    [-1, 3, C3, [128]],             # 12: (B, 128, 160, 160)
+    [-1, 1, Conv, [256, 3, 2]],     # 13: (B, 256, 80, 80)
+    [-1, 9, C3, [256]],             # 14: (B, 256, 80, 80) <- Thermal P3
+    [-1, 1, Conv, [512, 3, 2]],     # 15: (B, 512, 40, 40)
+    [-1, 9, C3, [512]],             # 16: (B, 512, 40, 40) <- Thermal P4
+    [-1, 1, Conv, [1024, 3, 2]],    # 17: (B, 1024, 20, 20)
+    [-1, 1, SPP, [1024, [5, 9, 13]]], # 18: (B, 1024, 20, 20)
+    [-1, 3, C3, [1024, False]],     # 19: (B, 1024, 20, 20) <- Thermal P5
 
-    ######### Progressive BCAM (Simplified) #############
+    ######### SIMPLIFIED PROGRESSIVE FUSION #############
     
-    # Step 1: P5 BCAM (establish semantic context)
-    [[9,19], 1, BCAM_SingleOutput, [1024]],         # 20: P5 fused
+    # P5 BCAM: Establish semantic context
+    [[9,19], 1, BCAM_SingleOutput, [1024]],         # 20: (B, 1024, 20, 20)
     
-    # Step 2: Progressive P4 - USE SIMPLER APPROACH
-    # Skip upsampling, just project P5 to match P4 channels, then use element-wise add
-    [20, 1, Conv, [512, 1, 1]],                     # 21: Project P5 (1024→512, stays 20x20)
-    [6, 1, nn.AdaptiveAvgPool2d, [20]],              # 22: Downsample RGB P4 to P5 size
-    [16, 1, nn.AdaptiveAvgPool2d, [20]],             # 23: Downsample Thermal P4 to P5 size
-    [[22, 23, 21], 1, Concat, [1]],                 # 24: Concat at P5 resolution (all 20x20)
-    [-1, 1, Conv, [1024, 1, 1]],                    # 25: Project concatenated
-    [-1, 1, Conv, [512, 1, 1]],                     # 26: Enhanced RGB P4 (at P5 res)
-    [25, 1, Conv, [512, 1, 1]],                     # 27: Enhanced Thermal P4 (at P5 res)
-    [[26, 27], 1, BCAM_SingleOutput, [512]],        # 28: P4 BCAM at P5 resolution
+    # P4 Progressive: Downsample P4 to P5 resolution for processing
+    [6, 1, nn.AdaptiveAvgPool2d, [20]],              # 21: (B, 512, 20, 20) <- RGB P4 → P5 res
+    [16, 1, nn.AdaptiveAvgPool2d, [20]],             # 22: (B, 512, 20, 20) <- Thermal P4 → P5 res
+    [20, 1, Conv, [512, 1, 1]],                     # 23: (B, 512, 20, 20) <- P5 context projected
     
-    # Step 3: Progressive P3 - USE SIMPLER APPROACH 
-    [28, 1, Conv, [256, 1, 1]],                     # 29: Project P4 result (512→256, stays 20x20)
-    [4, 1, nn.AdaptiveAvgPool2d, [20]],              # 30: Downsample RGB P3 to P5 size  
-    [14, 1, nn.AdaptiveAvgPool2d, [20]],             # 31: Downsample Thermal P3 to P5 size
-    [[30, 31, 29], 1, Concat, [1]],                 # 32: Concat at P5 resolution (all 20x20)
-    [-1, 1, Conv, [512, 1, 1]],                     # 33: Project concatenated
-    [-1, 1, Conv, [256, 1, 1]],                     # 34: Enhanced RGB P3 (at P5 res)
-    [33, 1, Conv, [256, 1, 1]],                     # 35: Enhanced Thermal P3 (at P5 res)
-    [[34, 35], 1, BCAM_SingleOutput, [256]],        # 36: P3 BCAM at P5 resolution
+    # P4 concatenation: f=[21, 22, 23] - all (B, 512, 20, 20)
+    [[21, 22, 23], 1, Concat, [1]],                 # 24: (B, 1536, 20, 20)
+    [-1, 1, Conv, [512, 1, 1]],                     # 25: (B, 512, 20, 20) <- P4 enhanced RGB
+    [24, 1, Conv, [512, 1, 1]],                     # 26: (B, 512, 20, 20) <- P4 enhanced Thermal
+    [[25, 26], 1, BCAM_SingleOutput, [512]],        # 27: (B, 512, 20, 20) <- P4 BCAM result
+    
+    # P3 Progressive: Downsample P3 to P5 resolution for processing
+    [4, 1, nn.AdaptiveAvgPool2d, [20]],              # 28: (B, 256, 20, 20) <- RGB P3 → P5 res
+    [14, 1, nn.AdaptiveAvgPool2d, [20]],             # 29: (B, 256, 20, 20) <- Thermal P3 → P5 res
+    [27, 1, Conv, [256, 1, 1]],                     # 30: (B, 256, 20, 20) <- P4 context projected
+    
+    # P3 concatenation: f=[28, 29, 30] - all (B, 256, 20, 20)
+    [[28, 29, 30], 1, Concat, [1]],                 # 31: (B, 768, 20, 20)
+    [-1, 1, Conv, [256, 1, 1]],                     # 32: (B, 256, 20, 20) <- P3 enhanced RGB
+    [31, 1, Conv, [256, 1, 1]],                     # 33: (B, 256, 20, 20) <- P3 enhanced Thermal
+    [[32, 33], 1, BCAM_SingleOutput, [256]],        # 34: (B, 256, 20, 20) <- P3 BCAM result
   ]
 
 head:
   [
-    ######### Use Progressive Outputs #############
-    # P5 path: Use BCAM-fused P5
-    [20, 1, Conv, [512, 1, 1]],                     # 31: Project P5 
-    [-1, 1, nn.Upsample, [None, 2, 'nearest']],     # 32: P5 upsample
+    ######### Detection Head - Upsample to Detection Resolutions #############
     
-    # P4 path: Use progressive P4  
-    [27, 1, Conv, [256, 1, 1]],                     # 36: Project P4 progressive
-    [[35, 36], 1, Concat, [1]],                     # 37: Concat P5_up + P4_prog (768ch)
-    [-1, 3, C3, [512, False]],                      # 38: Process P4
+    # P5 detection path: 20x20 → 20x20 (no change needed)
+    [20, 1, Conv, [512, 1, 1]],                     # 35: (B, 512, 20, 20)
     
-    # P3 path: Use progressive P3
-    [-1, 1, Conv, [256, 1, 1]],                     # 39: Project for P3
-    [-1, 1, nn.ConvTranspose2d, [256, 256, 4, 2, 1]], # 40: Upsample to P3
-    [34, 1, Conv, [256, 1, 1]],                     # 41: Project P3 progressive
-    [[40, 41], 1, Concat, [1]],                     # 42: Concat P4_up + P3_prog (512ch)
-    [-1, 3, C3, [256, False]],                      # 43: P3 final
-
-    # Downsample path
-    [-1, 1, Conv, [256, 3, 2]],                     # 44: P3→P4 down
-    [[44, 38], 1, Concat, [1]],                     # 45: Cat with P4 path
-    [-1, 3, C3, [512, False]],                      # 46: P4 final
-
-    [-1, 1, Conv, [512, 3, 2]],                     # 47: P4→P5 down
-    [[47, 32], 1, Concat, [1]],                     # 48: Cat with P5 path
-    [-1, 3, C3, [1024, False]],                     # 49: P5 final
-
-    [[43, 46, 49], 1, Detect, [nc, anchors]],       # Detection heads
+    # P4 detection path: 20x20 → 40x40
+    [27, 1, Conv, [256, 1, 1]],                     # 36: (B, 256, 20, 20)
+    [-1, 1, nn.Upsample, [None, 2, 'nearest']],     # 37: (B, 256, 40, 40)
+    [35, 1, nn.Upsample, [None, 2, 'nearest']],     # 38: (B, 512, 40, 40)
+    [[37, 38], 1, Concat, [1]],                     # 39: (B, 768, 40, 40)
+    [-1, 3, C3, [512, False]],                      # 40: (B, 512, 40, 40) <- P4 detection
+    
+    # P3 detection path: 20x20 → 80x80
+    [34, 1, Conv, [256, 1, 1]],                     # 41: (B, 256, 20, 20)
+    [-1, 1, nn.Upsample, [None, 4, 'nearest']],     # 42: (B, 256, 80, 80)
+    [40, 1, Conv, [256, 1, 1]],                     # 43: (B, 256, 40, 40)
+    [-1, 1, nn.Upsample, [None, 2, 'nearest']],     # 44: (B, 256, 80, 80)
+    [[42, 44], 1, Concat, [1]],                     # 45: (B, 512, 80, 80)
+    [-1, 3, C3, [256, False]],                      # 46: (B, 256, 80, 80) <- P3 detection
+    
+    # Standard YOLO detection head
+    [-1, 1, Conv, [256, 3, 2]],                     # 47: (B, 256, 40, 40) <- P3→P4
+    [[47, 40], 1, Concat, [1]],                     # 48: (B, 768, 40, 40)
+    [-1, 3, C3, [512, False]],                      # 49: (B, 512, 40, 40) <- P4 final
+    
+    [-1, 1, Conv, [512, 3, 2]],                     # 50: (B, 512, 20, 20) <- P4→P5
+    [[50, 35], 1, Concat, [1]],                     # 51: (B, 1024, 20, 20)
+    [-1, 3, C3, [1024, False]],                     # 52: (B, 1024, 20, 20) <- P5 final
+    
+    [[46, 49, 52], 1, Detect, [nc, anchors]],       # 53: Detection heads
   ]
