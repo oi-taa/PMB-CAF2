@@ -231,13 +231,10 @@ class Expand(nn.Module):
         return x.view(N, C // s ** 2, H * s, W * s)  # x(1,16,160,160)
 
 class GatedFusion(nn.Module):
-    """
-    Per-pixel per-channel gated fusion for progressive context integration
-    Learns where to apply context vs preserve original features
-    """
     def __init__(self, feature_channels, context_channels):
         super().__init__()
-        # Gate generator: concat features + context → per-pixel gate
+        
+        # Gate generator with proper initialization
         self.gate_conv = nn.Conv2d(
             feature_channels + context_channels, 
             feature_channels, 
@@ -245,28 +242,26 @@ class GatedFusion(nn.Module):
             bias=True
         )
         
-        # Global ramp parameter (starts at 0, gradually increases)
-        self.alpha = nn.Parameter(torch.tensor(-3.0))  # sigmoid(-3) ≈ 0.05
+        # Initialize gate to be mostly closed initially
+        nn.init.constant_(self.gate_conv.weight, 0.0)
+        nn.init.constant_(self.gate_conv.bias, -2.0)  # sigmoid(-2) ≈ 0.12
+        
+        # Fixed small alpha instead of learnable
+        self.alpha = 0.1  # Fixed 10% context strength
         
     def forward(self, x):
-        """
-        x: [features, context] 
-        features: (B, C, H, W) - clean P3 BCAM result
-        context: (B, C, H, W) - P4 progressive context
-        """
         features, context = x[0], x[1]
         
-        # Concatenate features and context
-        combined = torch.cat([features, context], dim=1)  # (B, 2C, H, W)
+        # Ensure same spatial dimensions
+        if features.shape[-2:] != context.shape[-2:]:
+            context = F.interpolate(context, size=features.shape[-2:], mode='bilinear')
         
-        # Generate per-pixel per-channel gate
-        gate = torch.sigmoid(self.gate_conv(combined))    # (B, C, H, W)
+        # Generate conservative gates
+        combined = torch.cat([features, context], dim=1)
+        gate = torch.sigmoid(self.gate_conv(combined))
         
-        # Global ramp (starts weak, gets stronger during training)
-        alpha_weight = torch.sigmoid(self.alpha)
-        
-        # Gated fusion: gate decides per-pixel whether to use context or original
-        fused = gate * (alpha_weight * context) + (1 - gate) * features
+        # Conservative fusion - small context influence
+        fused = features + gate * self.alpha * context
         
         return fused
     
