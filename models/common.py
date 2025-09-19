@@ -230,44 +230,45 @@ class Expand(nn.Module):
         x = x.permute(0, 3, 4, 1, 5, 2).contiguous()  # x(1,16,80,2,80,2)
         return x.view(N, C // s ** 2, H * s, W * s)  # x(1,16,160,160)
 
-class ChannelAttention(nn.Module):
+class GatedFusion(nn.Module):
     """
-    Channel Attention Module for Progressive Context Integration
-    Uses global context to generate channel-wise attention weights
+    Per-pixel per-channel gated fusion for progressive context integration
+    Learns where to apply context vs preserve original features
     """
     def __init__(self, feature_channels, context_channels):
         super().__init__()
-        self.feature_channels = feature_channels
-        self.context_channels = context_channels
-        
-        # Generate channel attention weights from context
-        self.weight_generator = nn.Sequential(
-            nn.Conv2d(context_channels, feature_channels, 1, bias=False),
-            nn.Sigmoid()
+        # Gate generator: concat features + context → per-pixel gate
+        self.gate_conv = nn.Conv2d(
+            feature_channels + context_channels, 
+            feature_channels, 
+            kernel_size=1, 
+            bias=True
         )
         
-        # Optional: Add a small learned bias for stability
-        self.bias_generator = nn.Sequential(
-            nn.Conv2d(context_channels, feature_channels, 1, bias=True),
-            nn.Tanh()
-        )
+        # Global ramp parameter (starts at 0, gradually increases)
+        self.alpha = nn.Parameter(torch.tensor(-3.0))  # sigmoid(-3) ≈ 0.05
         
     def forward(self, x):
         """
-        x: list [features, context]
-        features: (B, feature_channels, H, W) - P3 features  
-        context: (B, context_channels, 1, 1) - P4 global context
+        x: [features, context] 
+        features: (B, C, H, W) - clean P3 BCAM result
+        context: (B, C, H, W) - P4 progressive context
         """
         features, context = x[0], x[1]
         
-        # Generate channel attention weights
-        attention_weights = self.weight_generator(context)  # (B, feature_channels, 1, 1)
-        bias_weights = self.bias_generator(context) * 0.1   # (B, feature_channels, 1, 1) - small bias
+        # Concatenate features and context
+        combined = torch.cat([features, context], dim=1)  # (B, 2C, H, W)
         
-        # Apply channel-wise modulation
-        modulated_features = features * attention_weights + bias_weights
+        # Generate per-pixel per-channel gate
+        gate = torch.sigmoid(self.gate_conv(combined))    # (B, C, H, W)
         
-        return modulated_features
+        # Global ramp (starts weak, gets stronger during training)
+        alpha_weight = torch.sigmoid(self.alpha)
+        
+        # Gated fusion: gate decides per-pixel whether to use context or original
+        fused = gate * (alpha_weight * context) + (1 - gate) * features
+        
+        return fused
     
 class Concat(nn.Module):
     # Concatenate a list of tensors along dimension

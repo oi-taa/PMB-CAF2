@@ -765,14 +765,14 @@ def parse_model(d, ch):  # model_dict, input_channels(3)
             m_.thermal_pos_embed = None
         elif m is Concat:
             c2 = sum([ch[x] for x in f])
-        elif m is ChannelAttention:
-            print(f"DEBUG: ChannelAttention module with f={f}")
-            if isinstance(f, list):
+        elif m is GatedFusion:
+            print(f"DEBUG: GatedFusion module with f={f}")
+            if isinstance(f, list) and len(f) == 2:
                 c2 = ch[f[0]]  # Output channels same as feature input
                 feature_channels, context_channels = args[0], args[1]
-                m_ = ChannelAttention(feature_channels, context_channels)
+                m_ = GatedFusion(feature_channels, context_channels)
             else:
-                raise ValueError("ChannelAttention requires list input [features, context]")
+                raise ValueError("GatedFusion requires list input [features, context] and 2 args [feat_ch, ctx_ch]")
         elif m is Detect:
             args.append([ch[x] for x in f])
             if isinstance(args[1], int):  # number of anchors

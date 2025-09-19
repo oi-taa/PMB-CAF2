@@ -957,6 +957,11 @@ def train_rgb_ir(hyp, opt, device, tb_writer=None):
                 if hasattr(module, 'fusion_weights'):
                     weights = F.softmax(module.fusion_weights, dim=0)
                     print(f"Epoch {epoch} - Fusion weights: RGB={weights[0]:.3f}, Thermal={weights[1]:.3f}")
+        if i % 100 == 0:  # Every 100 batches
+            for name, module in model.named_modules():
+                if isinstance(module, GatedFusion):
+                    alpha_val = torch.sigmoid(module.alpha).item()
+                    print(f"GatedFusion {name}: alpha = {alpha_val:.3f}")
 
         # Scheduler
         lr = [x['lr'] for x in optimizer.param_groups]  # for tensorboard
