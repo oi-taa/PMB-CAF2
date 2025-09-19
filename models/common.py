@@ -230,7 +230,45 @@ class Expand(nn.Module):
         x = x.permute(0, 3, 4, 1, 5, 2).contiguous()  # x(1,16,80,2,80,2)
         return x.view(N, C // s ** 2, H * s, W * s)  # x(1,16,160,160)
 
-
+class ChannelAttention(nn.Module):
+    """
+    Channel Attention Module for Progressive Context Integration
+    Uses global context to generate channel-wise attention weights
+    """
+    def __init__(self, feature_channels, context_channels):
+        super().__init__()
+        self.feature_channels = feature_channels
+        self.context_channels = context_channels
+        
+        # Generate channel attention weights from context
+        self.weight_generator = nn.Sequential(
+            nn.Conv2d(context_channels, feature_channels, 1, bias=False),
+            nn.Sigmoid()
+        )
+        
+        # Optional: Add a small learned bias for stability
+        self.bias_generator = nn.Sequential(
+            nn.Conv2d(context_channels, feature_channels, 1, bias=True),
+            nn.Tanh()
+        )
+        
+    def forward(self, x):
+        """
+        x: list [features, context]
+        features: (B, feature_channels, H, W) - P3 features  
+        context: (B, context_channels, 1, 1) - P4 global context
+        """
+        features, context = x[0], x[1]
+        
+        # Generate channel attention weights
+        attention_weights = self.weight_generator(context)  # (B, feature_channels, 1, 1)
+        bias_weights = self.bias_generator(context) * 0.1   # (B, feature_channels, 1, 1) - small bias
+        
+        # Apply channel-wise modulation
+        modulated_features = features * attention_weights + bias_weights
+        
+        return modulated_features
+    
 class Concat(nn.Module):
     # Concatenate a list of tensors along dimension
     def __init__(self, dimension=1):
