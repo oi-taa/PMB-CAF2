@@ -766,8 +766,7 @@ def parse_model(d, ch):  # model_dict, input_channels(3)
         elif m is Concat:
             c2 = sum([ch[x] for x in f])
         elif m is SCP_Enhanced_Concat:
-            c2 = ch[f[0]]  # Output channels same as RGB input
-            args = [args[0]] if args else [512] 
+            c2 = sum([ch[x] for x in f]) 
         elif m is Detect:
             args.append([ch[x] for x in f])
             if isinstance(args[1], int):  # number of anchors
