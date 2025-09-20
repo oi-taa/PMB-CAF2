@@ -45,9 +45,10 @@ logger = logging.getLogger(__name__)
 
 def monitor_scp_comprehensive(model, batch_idx, epoch):
     """Comprehensive SCP monitoring with all critical metrics"""
-    if batch_idx % 200 == 0:
-        print(f"\n=== SCP Monitor - Epoch {epoch}, Batch {batch_idx} ===")
-        
+    # Only log every 5 epochs at the first batch
+    if epoch % 5 == 0 and batch_idx == 0:
+        print(f"\n=== SCP Monitor - Epoch {epoch} ===")
+       
         # 1. Gamma distribution (most important)
         for name, module in model.named_modules():
             if isinstance(module, SCP_Enhanced_Upsample):
@@ -56,46 +57,21 @@ def monitor_scp_comprehensive(model, batch_idx, epoch):
                     mean_gamma = stats['mean_confidence']
                     min_gamma = stats['min_confidence']
                     max_gamma = stats['max_confidence']
-                    
+                   
                     print(f"Gamma stats: mean={mean_gamma:.4f}, min={min_gamma:.4f}, max={max_gamma:.4f}")
-                    
+                   
                     # Analysis and warnings
                     if mean_gamma < 0.02:
-                        print("⚠️  WARNING: Gamma too low - SCP barely used. Consider reducing negative bias.")
+                        print("WARNING: Gamma too low - SCP barely used.")
                     elif mean_gamma > 0.9:
-                        print("⚠️  WARNING: Gamma too high - Risk of destructive injection. Increase negative bias.")
+                        print("WARNING: Gamma too high - Risk of destructive injection.")
                     elif 0.05 <= mean_gamma <= 0.7:
-                        print("✅ Gamma in healthy range")
-                    
+                        print("Gamma in healthy range")
+                   
                 break
-        
-        # 2. Shape verification
-        print("Shape verification passed" if batch_idx > 0 else "Shape verification: first batch")
-        
+       
         print("=" * 50)
 
-
-def monitor_bcam_input_similarity(model):
-    """Register hook to monitor BCAM input cosine similarity"""
-    similarities = []
-    
-    def bcam_hook(module, inp, out):
-        if isinstance(inp, (list, tuple)) and len(inp) >= 2:
-            a, b = inp[0], inp[1]
-            # Flatten and compute cosine similarity
-            a_flat = a.view(a.shape[0], -1)
-            b_flat = b.view(b.shape[0], -1)
-            cos_sim = F.cosine_similarity(a_flat, b_flat, dim=1).mean().item()
-            similarities.append(cos_sim)
-    
-    # Attach hook to BCAM modules
-    for name, module in model.named_modules():
-        if 'BCAM' in module.__class__.__name__:
-            module.register_forward_hook(bcam_hook)
-            print(f"Attached similarity monitor to {name}")
-            break  # Monitor first BCAM only
-    
-    return similarities
 
 def save_final_results_only(save_dir, final_results, final_times, efficiency_metrics, opt):
     """Save only final comprehensive results"""
