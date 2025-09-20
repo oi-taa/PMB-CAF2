@@ -510,24 +510,7 @@ def train(hyp, opt, device, tb_writer=None):
             if fi > best_fitness:
                 best_fitness = fi
             wandb_logger.end_epoch(best_result=best_fitness == fi)
-            if epoch >= warmup_epochs and opt.patience > 0:
-                current_score = results[7] if len(results) > 7 else fi  # mAP@0.5:0.95 or fitness
-                if current_score > best_score + opt.min_delta:
-                    best_score, wait = current_score, 0
-                    best_weights = deepcopy(model.module.state_dict() if hasattr(model, 'module') else model.state_dict())
-                    logger.info(f'New best mAP@0.5:0.95: {best_score:.4f}')
-                else:
-                    wait += 1
-                    logger.info(f'No improvement: {wait}/{opt.patience}')
-                
-                if wait >= opt.patience:
-                    logger.info(f'Early stopping at epoch {epoch}, best mAP@0.5:0.95={best_score:.4f}')
-                    if best_weights: 
-                        if hasattr(model, 'module'):
-                            model.module.load_state_dict(best_weights)
-                        else:
-                            model.load_state_dict(best_weights)
-                    break
+            
 
 
             # Save model
@@ -749,6 +732,9 @@ def train_rgb_ir(hyp, opt, device, tb_writer=None):
     # Resume
     # Resume - SAFE / CORRECTED VERSION
     start_epoch, best_fitness = 0, 0.0
+    best_score, wait = -float('inf'), 0
+    best_weights = None
+    warmup_epochs = 5
     if pretrained:
         # Optimizer (safe load)
         opt_sd_saved = ckpt.get('optimizer', None)
@@ -1229,6 +1215,24 @@ def train_rgb_ir(hyp, opt, device, tb_writer=None):
                     break
                 best_fitness = fi
             wandb_logger.end_epoch(best_result=best_fitness == fi)
+            if epoch >= warmup_epochs and opt.patience > 0:
+                current_score = results[7] if len(results) > 7 else fi  # mAP@0.5:0.95 or fitness
+                if current_score > best_score + opt.min_delta:
+                    best_score, wait = current_score, 0
+                    best_weights = deepcopy(model.module.state_dict() if hasattr(model, 'module') else model.state_dict())
+                    logger.info(f'New best mAP@0.5:0.95: {best_score:.4f}')
+                else:
+                    wait += 1
+                    logger.info(f'No improvement: {wait}/{opt.patience}')
+                
+                if wait >= opt.patience:
+                    logger.info(f'Early stopping at epoch {epoch}, best mAP@0.5:0.95={best_score:.4f}')
+                    if best_weights: 
+                        if hasattr(model, 'module'):
+                            model.module.load_state_dict(best_weights)
+                        else:
+                            model.load_state_dict(best_weights)
+                    break
 
             # Save model
             if (not opt.nosave) or (final_epoch and not opt.evolve):  # if save
