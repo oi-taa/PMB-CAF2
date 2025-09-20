@@ -663,7 +663,6 @@ def parse_model(d, ch):  # model_dict, input_channels(3)
     no = na * (nc + 5)  # number of outputs = anchors * (classes + 5)
 
     layers, save, c2 = [], [], ch[-1]  # layers, savelist, ch out
-    print(f"DEBUG: Initial ch = {ch}")
     
     for i, (f, n, m, args) in enumerate(d['backbone'] + d['head']):  # from, number, module, args
         
@@ -682,14 +681,11 @@ def parse_model(d, ch):  # model_dict, input_channels(3)
 
             if m is Focus:
                 c1, c2 = 3, args[0]
-                print(f"DEBUG: Focus - c1={c1}, c2={c2}")
                 if c2 != no:  # if not output
                     c2 = make_divisible(c2 * gw, 8)
                 args = [c1, c2, *args[1:]]
             else:
-                print(f"DEBUG: Non-Focus module, trying to access ch[{f}]")
                 if isinstance(f, list):
-                    print(f"DEBUG: f is list {f}, using f[0]={f[0]}")
                     if f[0] >= len(ch):
                         print(f"ERROR: f[0]={f[0]} >= len(ch)={len(ch)}")
                     f_idx = f[0]
@@ -702,7 +698,6 @@ def parse_model(d, ch):  # model_dict, input_channels(3)
                     raise IndexError(f"Index {f_idx} out of range for ch list of length {len(ch)}")
                     
                 c1, c2 = ch[f_idx], args[0]
-                print(f"DEBUG: c1={c1} (from ch[{f_idx}]), c2={c2}")
                 if c2 != no:  # if not output
                     c2 = make_divisible(c2 * gw, 8)
 
@@ -713,23 +708,18 @@ def parse_model(d, ch):  # model_dict, input_channels(3)
         elif m is nn.BatchNorm2d:
             args = [ch[f]]
         elif m is Add:
-            print(f"DEBUG: Add module with f={f}")
             c2 = ch[f[0]]
             args = [c2]
         elif m is Add2:
-            print(f"DEBUG: Add2 module with f={f}")
             c2 = ch[f[0]]
             args = [c2, args[1]]
         elif m is GPT:
-            print(f"DEBUG: GPT module with f={f}")
             c2 = ch[f[0]]
             args = [c2]
         elif m is BCAM:
-            print(f"DEBUG: BCAM module with f={f}")
             c2 = ch[f[0]]
             args = [c2] + args[1:] if len(args) > 1 else [c2]
         elif m is BCAM_SingleOutput:
-            print(f"DEBUG: BCAM_SingleOutput module with f={f}")
             
             # Handle both list and integer f values
             if isinstance(f, list):
@@ -737,7 +727,6 @@ def parse_model(d, ch):  # model_dict, input_channels(3)
             else:
                 f_idx = f
             
-            print(f"DEBUG: Trying to access ch[{f_idx}], ch length = {len(ch)}")
             
             if f_idx >= len(ch):
                 print(f"ERROR: f_idx={f_idx} >= len(ch)={len(ch)} for BCAM_SingleOutput")
@@ -747,14 +736,12 @@ def parse_model(d, ch):  # model_dict, input_channels(3)
             c2 = ch[f_idx]
             m_ = BCAM_SingleOutput(c2, output_mode='fused', *args[1:])
         elif m is UCAM:
-            print(f"DEBUG: UCAM module with f={f}")
             c2 = ch[f[0]]
             m_ = m(c2, *args[1:])
             # Disable internal pos - will use external pos from orchestration
             m_.rgb_pos_embed = None
             m_.thermal_pos_embed = None
         elif m is BCAM_Progressive:
-            print(f"DEBUG: BCAM_Progressive module with f={f}")
             c2 = ch[f[0]]
             if len(args) >= 2:
                 d_model, coarse_channels = args[0], args[1] 
@@ -772,7 +759,6 @@ def parse_model(d, ch):  # model_dict, input_channels(3)
             if isinstance(args[1], int):  # number of anchors
                 args[1] = [list(range(args[1] * 2))] * len(f)
         elif m is nn.AdaptiveAvgPool2d:
-            print(f"DEBUG: AdaptiveAvgPool2d module with f={f}")
             if isinstance(f, list):
                 f_idx = f[0]
             else:
@@ -789,7 +775,6 @@ def parse_model(d, ch):  # model_dict, input_channels(3)
         elif m is Expand:
             c2 = ch[f] // args[0] ** 2
         else:
-            print(f"DEBUG: Unknown module type {m}, f={f}")
             c2 = ch[f]
 
         if 'm_' not in locals():
@@ -804,7 +789,6 @@ def parse_model(d, ch):  # model_dict, input_channels(3)
         if i == 0:
             ch = []
         ch.append(c2)
-        print(f"DEBUG: After layer {i}, ch = {ch}")
         
         # Clear m_ for next iteration
         if 'm_' in locals():
