@@ -1096,13 +1096,7 @@ def train_rgb_ir(hyp, opt, device, tb_writer=None):
 
             # Backward
             scaler.scale(loss).backward()
-            if i % 200 == 0 and similarities:
-                cos_sim = similarities[-1] if similarities else 0
-                print(f"BCAM input cosine similarity: {cos_sim:.4f}")
-                if cos_sim > 0.98:
-                    print("⚠️  WARNING: BCAM inputs too similar - check wiring!")
-                elif cos_sim < 0.95:
-                    print("✅ BCAM inputs properly distinct")
+            
 
             # Optimize
             if ni % accumulate == 0:
