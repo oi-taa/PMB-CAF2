@@ -777,7 +777,7 @@ def train_rgb_ir(hyp, opt, device, tb_writer=None):
         print(f"  BCAM: {bcam_params/1e6:.1f}M")
         print(f"  Backbone: {(total_params-bcam_params)/1e6:.1f}M")
     
-    similarities = monitor_bcam_input_similarity(model)
+    #similarities = monitor_bcam_input_similarity(model)
     with torch_distributed_zero_first(rank):
         check_dataset(data_dict)  # check
     train_path_rgb = data_dict['train_rgb']

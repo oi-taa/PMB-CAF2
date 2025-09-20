@@ -269,7 +269,7 @@ class SCP_Enhanced_Upsample(nn.Module):
         
         # Initialize final linear bias to negative for conservative start
         if last_linear is not None:
-            nn.init.constant_(last_linear.bias, -3.0)  # sigmoid(-3) ≈ 0.047
+            nn.init.constant_(last_linear.bias, -2.0)  # sigmoid(-3) ≈ 0.047
         
         self._last_confidence = None
     
