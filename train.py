@@ -44,6 +44,22 @@ logger = logging.getLogger(__name__)
 from utils.datasets import RandomSampler
 import global_var
 
+def log_confidence_stats(model, batch_idx, epoch):
+            """
+            Simple confidence logging - just verify SCP is working
+            
+            Args:
+                model: Your YOLO model containing SCP modules
+                batch_idx: Current batch index  
+                epoch: Current epoch
+            """
+            if batch_idx % 200 == 0:  # Log every 200 batches
+                for name, module in model.named_modules():
+                    if hasattr(module, '__class__') and 'SCP_Enhanced_Concat' in module.__class__.__name__:
+                        if hasattr(module, '_last_confidence'):
+                            conf = module._last_confidence.mean().item()
+                            print(f"Epoch {epoch}, Batch {batch_idx} - SCP confidence: {conf:.3f}")
+                            break  # Just log first SCP module found
 
 def train(hyp, opt, device, tb_writer=None):
     logger.info(colorstr('hyperparameters: ') + ', '.join(f'{k}={v}' for k, v in hyp.items()))
@@ -858,7 +874,6 @@ def train_rgb_ir(hyp, opt, device, tb_writer=None):
         # Update mosaic border
         # b = int(random.uniform(0.25 * imgsz, 0.75 * imgsz + gs) // gs * gs)
         # dataset.mosaic_border = [b - imgsz, -b]  # height, width borders
-
         mloss = torch.zeros(4, device=device)  # mean losses
         if rank != -1:
             dataloader.sampler.set_epoch(epoch)
@@ -869,6 +884,7 @@ def train_rgb_ir(hyp, opt, device, tb_writer=None):
         optimizer.zero_grad()
         for i, (imgs, targets, paths, _) in pbar:  # batch -------------------------------------------------------------
             ni = i + nb * epoch  # number integrated batches (since train start)
+            log_confidence_stats(model, i, epoch)
             imgs = imgs.to(device, non_blocking=True).float() / 255.0  # uint8 to float32, 0-255 to 0.0-1.0
             imgs_rgb = imgs[:, :3, :, :]
             imgs_ir = imgs[:, 3:, :, :]

@@ -230,40 +230,52 @@ class Expand(nn.Module):
         x = x.permute(0, 3, 4, 1, 5, 2).contiguous()  # x(1,16,80,2,80,2)
         return x.view(N, C // s ** 2, H * s, W * s)  # x(1,16,160,160)
 
-class GatedFusion(nn.Module):
-    def __init__(self, feature_channels, context_channels):
-        super().__init__()
+
+class SCP_Enhanced_Concat(torch.nn.Module):
+    """
+    SCP module with minimal confidence tracking
+    """
+    
+    def __init__(self, context_channels=512):
+        super(SCP_Enhanced_Concat, self).__init__()
         
-        # Gate generator with proper initialization
-        self.gate_conv = nn.Conv2d(
-            feature_channels + context_channels, 
-            feature_channels, 
-            kernel_size=1, 
-            bias=True
+        # Lightweight confidence estimation network
+        self.confidence_net = torch.nn.Sequential(
+            torch.nn.AdaptiveAvgPool2d(1),                    # [B, 512, H, W] -> [B, 512, 1, 1]
+            torch.nn.Conv2d(context_channels, 64, 1),         # Channel reduction
+            torch.nn.ReLU(inplace=True),
+            torch.nn.Conv2d(64, 1, 1),                        # Confidence score
+            torch.nn.Sigmoid()                                # Normalize to [0,1]
         )
         
-        # Initialize gate to be mostly closed initially
-        nn.init.constant_(self.gate_conv.weight, 0.0)
-        nn.init.constant_(self.gate_conv.bias, -2.0)  # sigmoid(-2) ≈ 0.12
-        
-        # Fixed small alpha instead of learnable
-        self.alpha = 0.1  # Fixed 10% context strength
+        # Store last confidence for logging (optional)
+        self._last_confidence = None
         
     def forward(self, x):
-        features, context = x[0], x[1]
+        """
+        Args:
+            x: List of [rgb_p4, thermal_p4, p5_context]
         
-        # Ensure same spatial dimensions
-        if features.shape[-2:] != context.shape[-2:]:
-            context = F.interpolate(context, size=features.shape[-2:], mode='bilinear')
+        Returns:
+            Concatenated tensor with confidence-weighted P5 context
+        """
+        if isinstance(x, list) and len(x) == 3:
+            rgb_p4, thermal_p4, p5_context = x
+        else:
+            raise ValueError("Expected list of 3 tensors: [rgb_p4, thermal_p4, p5_context]")
         
-        # Generate conservative gates
-        combined = torch.cat([features, context], dim=1)
-        gate = torch.sigmoid(self.gate_conv(combined))
+        # Estimate semantic confidence from P5 context
+        confidence = self.confidence_net(p5_context)  # [B, 1, 1, 1]
         
-        # Conservative fusion - small context influence
-        fused = features + gate * self.alpha * context
+        # Store for optional logging
+        self._last_confidence = confidence.detach()
         
-        return fused
+        # Apply confidence weighting to P5 context
+        weighted_context = confidence * p5_context
+        
+        # Concatenate: [B, 512] + [B, 512] + [B, 512] = [B, 1536]
+        return torch.cat([rgb_p4, thermal_p4, weighted_context], dim=1)
+
     
 class Concat(nn.Module):
     # Concatenate a list of tensors along dimension
