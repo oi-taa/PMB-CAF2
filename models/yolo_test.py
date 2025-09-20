@@ -752,8 +752,28 @@ def parse_model(d, ch):  # model_dict, input_channels(3)
             m_.thermal_pos_embed = None
         elif m is Concat:
             c2 = sum([ch[x] for x in f])
-        elif m is SCP_Enhanced_Concat:
-            c2 = sum([ch[x] for x in f]) 
+        elif m is SCP_Enhanced_Upsample:
+            print(f"DEBUG: SCP_Enhanced_Upsample module with f={f}")
+            if isinstance(f, list) and len(f) == 2:
+                # f = [p5_fused_idx, p5_ctx_proj_idx]
+                p5_channels = ch[f[0]]      # Should be 1024 for P5 fused
+                ctx_channels = ch[f[1]]     # Should be 64 for projected context
+                c2 = ctx_channels           # Output channels same as context channels
+                
+                # args[0] should be ctx_channels (64)
+                if len(args) > 0:
+                    ctx_channels = args[0]
+                    c2 = ctx_channels
+                
+                m_ = SCP_Enhanced_Upsample(
+                    p5_channels=p5_channels,
+                    ctx_channels=ctx_channels,
+                    hidden=256,
+                    scale_factor=2,
+                    mode='nearest'
+                )
+            else:
+                raise ValueError("SCP_Enhanced_Upsample requires two inputs: [p5_fused, p5_ctx_proj]")
         elif m is Detect:
             args.append([ch[x] for x in f])
             if isinstance(args[1], int):  # number of anchors

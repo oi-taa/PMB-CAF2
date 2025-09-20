@@ -1,0 +1,95 @@
+# CORRECTED: Hierarchical BCAM - P5 + P4 with proper separate inputs
+# Fixed P4 BCAM to receive separate RGB/Thermal context-enhanced features
+
+nc: 3
+depth_multiple: 1.00
+width_multiple: 1.00
+
+anchors:
+  - [10,13, 16,30, 33,23]
+  - [30,61, 62,45, 59,119]  
+  - [116,90, 156,198, 373,326]
+
+backbone:
+  [
+    ######### Standard YOLO Dual Streams (0-19) #############
+    # RGB Stream: 0-9
+    [-1, 1, Focus, [64, 3]],        # 0
+    [-1, 1, Conv, [128, 3, 2]],     # 1
+    [-1, 3, C3, [128]],             # 2
+    [-1, 1, Conv, [256, 3, 2]],     # 3
+    [-1, 9, C3, [256]],             # 4 <- RGB P3
+    [-1, 1, Conv, [512, 3, 2]],     # 5
+    [-1, 9, C3, [512]],             # 6 <- RGB P4
+    [-1, 1, Conv, [1024, 3, 2]],    # 7
+    [-1, 1, SPP, [1024, [5, 9, 13]]], # 8
+    [-1, 3, C3, [1024, False]],     # 9 <- RGB P5
+
+    # Thermal Stream: 10-19
+    [-4, 1, Focus, [64, 3]],        # 10
+    [-1, 1, Conv, [128, 3, 2]],     # 11
+    [-1, 3, C3, [128]],             # 12
+    [-1, 1, Conv, [256, 3, 2]],     # 13
+    [-1, 9, C3, [256]],             # 14 <- Thermal P3
+    [-1, 1, Conv, [512, 3, 2]],     # 15
+    [-1, 9, C3, [512]],             # 16 <- Thermal P4
+    [-1, 1, Conv, [1024, 3, 2]],    # 17
+    [-1, 1, SPP, [1024, [5, 9, 13]]], # 18
+    [-1, 3, C3, [1024, False]],     # 19 <- Thermal P5
+
+    ######### CORRECTED: Hierarchical BCAM (P5→P4) #############
+    
+    # Step 1: P5 BCAM (unchanged)
+    [[9,19], 1, BCAM_SingleOutput, [1024]],         # 20: P5 fused
+    
+    # Step 2: P4 Context Preparation with SCP
+    [20, 1, Conv, [64, 1, 1]],                      # 21: Project P5 context (1024→64)
+    [[20, 21], 1, SCP_Enhanced_Upsample, [64]],     # 22: SCP + Upsample to P4 size
+    
+    # Step 3: Separate RGB and Thermal context enhancement
+    [[6, 22], 1, Concat, [1]],                      # 23: RGB_P4 + SCP_weighted_ctx (512+64=576ch)
+    [23, 1, Conv, [512, 1, 1]],                     # 24: Project RGB+ctx (576→512)
+    
+    [[16, 22], 1, Concat, [1]],                     # 25: Thermal_P4 + SCP_weighted_ctx (512+64=576ch)
+    [25, 1, Conv, [512, 1, 1]],                     # 26: Project Thermal+ctx (576→512)
+    
+    # Step 4: P4 BCAM with separate context-enhanced inputs
+    [[24, 26], 1, BCAM_SingleOutput, [512]],        # 27: P4 BCAM
+    
+    # Step 5: P3 Simple Cascade (NO BCAM)
+    [27, 1, Conv, [256, 1, 1]],                     # 28: Project P4 BCAM result
+    [-1, 1, nn.Upsample, [None, 2, 'nearest']],     # 29: Upsample P4 to P3 size
+    [[4, 14, 29], 1, Concat, [1]],                  # 30: Cat RGB_P3 + Thermal_P3 + P4_context
+    [-1, 1, Conv, [256, 1, 1]],                     # 31: Project concatenated features
+  ]
+
+head:
+  [
+    ######### Head Using P5 BCAM + P4 BCAM #############
+    # P5 path
+    [20, 1, Conv, [512, 1, 1]],                     # 32: Project P5 fused
+    [-1, 1, nn.Upsample, [None, 2, 'nearest']],     # 33: P5 upsample
+    
+    # P4 path - Use P4 BCAM result
+    [27, 1, Conv, [256, 1, 1]],                     # 34: Project P4 BCAM
+    [[33, 34], 1, Concat, [1]],                     # 35: Concat P5_up + P4_BCAM
+    [-1, 3, C3, [512, False]],                      # 36: Process P4
+    
+    # P3 path - Use simple cascaded result
+    [-1, 1, Conv, [256, 1, 1]],                     # 37: Project for P3
+    [-1, 1, nn.Upsample, [None, 2, 'nearest']],     # 38: Upsample to P3
+    [31, 1, Conv, [256, 1, 1]],                     # 39: Project P3 cascaded
+    [[38, 39], 1, Concat, [1]],                     # 40: Concat P4_up + P3_cascaded
+    [-1, 3, C3, [256, False]],                      # 41: P3 final
+
+    # Downsample path
+    [-1, 1, Conv, [256, 3, 2]],                     # 42: P3→P4 down
+    [[42, 36], 1, Concat, [1]],                     # 43: Cat with P4 path
+    [-1, 3, C3, [512, False]],                      # 44: P4 final
+
+    [-1, 1, Conv, [512, 3, 2]],                     # 45: P4→P5 down
+    [[45, 32], 1, Concat, [1]],                     # 46: Cat with P5 path
+    [-1, 3, C3, [1024, False]],                     # 47: P5 final
+
+    [[41, 44, 47], 1, Detect, [nc, anchors]],       # Detection heads
+  ]

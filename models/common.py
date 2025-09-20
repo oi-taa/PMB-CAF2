@@ -231,50 +231,96 @@ class Expand(nn.Module):
         return x.view(N, C // s ** 2, H * s, W * s)  # x(1,16,160,160)
 
 
-class SCP_Enhanced_Concat(torch.nn.Module):
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+
+class SCP_Enhanced_Upsample(nn.Module):
     """
-    SCP module with minimal confidence tracking
+    SCP module that:
+    - Computes confidence gamma from P5 fused features 
+    - Applies gamma to projected P5 context, then upsamples to P4 size
+    
+    Usage: Takes two inputs [p5_fused, p5_ctx_proj] and returns weighted upsampled context
     """
     
-    def __init__(self, context_channels=512):
-        super(SCP_Enhanced_Concat, self).__init__()
+    def __init__(self, p5_channels=1024, ctx_channels=64, hidden=256, scale_factor=2, mode='nearest'):
+        super(SCP_Enhanced_Upsample, self).__init__()
+        self.p5_channels = p5_channels
+        self.ctx_channels = ctx_channels
+        self.scale_factor = scale_factor
+        self.mode = mode
         
-        # Lightweight confidence estimation network
-        self.confidence_net = torch.nn.Sequential(
-            torch.nn.AdaptiveAvgPool2d(1),                    # [B, 512, H, W] -> [B, 512, 1, 1]
-            torch.nn.Conv2d(context_channels, 64, 1),         # Channel reduction
-            torch.nn.ReLU(inplace=True),
-            torch.nn.Conv2d(64, 1, 1),                        # Confidence score
-            torch.nn.Sigmoid()                                # Normalize to [0,1]
+        # MLP for gamma: input = p5_channels (1024), output = scalar per sample
+        self.gamma_mlp = nn.Sequential(
+            nn.Linear(p5_channels, hidden),
+            nn.ReLU(inplace=True),
+            nn.Linear(hidden, 1)
         )
         
-        # Store last confidence for logging (optional)
-        self._last_confidence = None
+        # Initialize gamma_mlp with small weights and conservative start
+        last_linear = None
+        for m in self.gamma_mlp.modules():
+            if isinstance(m, nn.Linear):
+                nn.init.kaiming_normal_(m.weight, nonlinearity='relu')
+                if m.bias is not None:
+                    nn.init.constant_(m.bias, 0.0)
+                last_linear = m
         
+        # Initialize final linear bias to negative for conservative start
+        if last_linear is not None:
+            nn.init.constant_(last_linear.bias, -3.0)  # sigmoid(-3) ≈ 0.047
+        
+        self._last_confidence = None
+    
     def forward(self, x):
         """
         Args:
-            x: List of [rgb_p4, thermal_p4, p5_context]
-        
+            x: List/tuple of [p5_fused, p5_ctx_proj]
+            p5_fused: [B, 1024, H5, W5] - used to compute gamma
+            p5_ctx_proj: [B, 64, H5, W5] - projected context at P5 resolution
+            
         Returns:
-            Concatenated tensor with confidence-weighted P5 context
+            weighted_ctx_upsampled: [B, 64, H4, W4] - upsampled weighted context
         """
-        if isinstance(x, list) and len(x) == 3:
-            rgb_p4, thermal_p4, p5_context = x
+        if isinstance(x, (list, tuple)) and len(x) == 2:
+            p5_fused, p5_ctx_proj = x
         else:
-            raise ValueError("Expected list of 3 tensors: [rgb_p4, thermal_p4, p5_context]")
+            raise ValueError("SCP_Enhanced_Upsample expects [p5_fused, p5_ctx_proj]")
         
-        # Estimate semantic confidence from P5 context
-        confidence = self.confidence_net(p5_context)  # [B, 1, 1, 1]
+        # Compute gamma from P5 fused features
+        b = p5_fused.shape[0]
+        g = p5_fused.mean(dim=(2, 3))                    # Global average pool [B, 1024]
+        g = self.gamma_mlp(g)                            # [B, 1]
+        gamma = torch.sigmoid(g).view(b, 1, 1, 1)        # [B, 1, 1, 1]
         
-        # Store for optional logging
-        self._last_confidence = confidence.detach()
+        # Store for logging
+        self._last_confidence = gamma.detach()
         
-        # Apply confidence weighting to P5 context
-        weighted_context = confidence * p5_context
+        # Upsample projected context to P4 size
+        p5_ctx_up = F.interpolate(
+            p5_ctx_proj, 
+            scale_factor=self.scale_factor, 
+            mode=self.mode,
+            recompute_scale_factor=False
+        )  # [B, 64, H4, W4]
         
-        # Concatenate: [B, 512] + [B, 512] + [B, 512] = [B, 1536]
-        return torch.cat([rgb_p4, thermal_p4, weighted_context], dim=1)
+        # Apply confidence weighting
+        weighted_ctx = gamma * p5_ctx_up                 # [B, 64, H4, W4]
+        
+        return weighted_ctx
+    
+    def get_confidence_stats(self):
+        """Helper for monitoring gamma distribution"""
+        if self._last_confidence is None:
+            return None
+        c = self._last_confidence
+        return {
+            'mean_confidence': float(c.mean().item()),
+            'std_confidence': float(c.std().item()),
+            'min_confidence': float(c.min().item()),
+            'max_confidence': float(c.max().item())
+        }
 
     
 class Concat(nn.Module):

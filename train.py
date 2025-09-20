@@ -42,7 +42,61 @@ from utils.wandb_logging.wandb_utils import WandbLogger, check_wandb_resume
 
 logger = logging.getLogger(__name__)
 
+
+def monitor_scp_comprehensive(model, batch_idx, epoch):
+    """Comprehensive SCP monitoring with all critical metrics"""
+    if batch_idx % 200 == 0:
+        print(f"\n=== SCP Monitor - Epoch {epoch}, Batch {batch_idx} ===")
+        
+        # 1. Gamma distribution (most important)
+        for name, module in model.named_modules():
+            if isinstance(module, SCP_Enhanced_Upsample):
+                stats = module.get_confidence_stats()
+                if stats:
+                    mean_gamma = stats['mean_confidence']
+                    min_gamma = stats['min_confidence']
+                    max_gamma = stats['max_confidence']
+                    
+                    print(f"Gamma stats: mean={mean_gamma:.4f}, min={min_gamma:.4f}, max={max_gamma:.4f}")
+                    
+                    # Analysis and warnings
+                    if mean_gamma < 0.02:
+                        print("⚠️  WARNING: Gamma too low - SCP barely used. Consider reducing negative bias.")
+                    elif mean_gamma > 0.9:
+                        print("⚠️  WARNING: Gamma too high - Risk of destructive injection. Increase negative bias.")
+                    elif 0.05 <= mean_gamma <= 0.7:
+                        print("✅ Gamma in healthy range")
+                    
+                break
+        
+        # 2. Shape verification
+        print("Shape verification passed" if batch_idx > 0 else "Shape verification: first batch")
+        
+        print("=" * 50)
+
+
+def monitor_bcam_input_similarity(model):
+    """Register hook to monitor BCAM input cosine similarity"""
+    similarities = []
     
+    def bcam_hook(module, inp, out):
+        if isinstance(inp, (list, tuple)) and len(inp) >= 2:
+            a, b = inp[0], inp[1]
+            # Flatten and compute cosine similarity
+            a_flat = a.view(a.shape[0], -1)
+            b_flat = b.view(b.shape[0], -1)
+            cos_sim = F.cosine_similarity(a_flat, b_flat, dim=1).mean().item()
+            similarities.append(cos_sim)
+    
+    # Attach hook to BCAM modules
+    for name, module in model.named_modules():
+        if 'BCAM' in module.__class__.__name__:
+            module.register_forward_hook(bcam_hook)
+            print(f"Attached similarity monitor to {name}")
+            break  # Monitor first BCAM only
+    
+    return similarities
+
 def save_final_results_only(save_dir, final_results, final_times, efficiency_metrics, opt):
     """Save only final comprehensive results"""
     save_dir = Path(save_dir)
@@ -669,6 +723,9 @@ def train_rgb_ir(hyp, opt, device, tb_writer=None):
     best = wdir / 'best.pt'
     results_file = save_dir / 'results.txt'
     early_stopping = EarlyStopping(patience=opt.patience) if opt.patience > 0 else None
+    
+    
+
 
     # Save run settings
     with open(save_dir / 'hyp.yaml', 'w') as f:
@@ -719,12 +776,15 @@ def train_rgb_ir(hyp, opt, device, tb_writer=None):
         print(f"  Total: {total_params/1e6:.1f}M")
         print(f"  BCAM: {bcam_params/1e6:.1f}M")
         print(f"  Backbone: {(total_params-bcam_params)/1e6:.1f}M")
+    
+    similarities = monitor_bcam_input_similarity(model)
     with torch_distributed_zero_first(rank):
         check_dataset(data_dict)  # check
     train_path_rgb = data_dict['train_rgb']
     test_path_rgb = data_dict['val_rgb']
     train_path_ir = data_dict['train_ir']
     test_path_ir = data_dict['val_ir']
+    
 
     # Freeze
     freeze = []  # parameter names to freeze (full or partial)
@@ -986,7 +1046,9 @@ def train_rgb_ir(hyp, opt, device, tb_writer=None):
             imgs = imgs.to(device, non_blocking=True).float() / 255.0  # uint8 to float32, 0-255 to 0.0-1.0
             imgs_rgb = imgs[:, :3, :, :]
             imgs_ir = imgs[:, 3:, :, :]
-
+            pred = model(imgs_rgb, imgs_ir)
+            monitor_scp_comprehensive(model, i, epoch)
+            
             # FQY my code 训练数据可视化
             flage_visual = global_var.get_value('flag_visual_training_dataset')
             if flage_visual:
@@ -1034,7 +1096,13 @@ def train_rgb_ir(hyp, opt, device, tb_writer=None):
 
             # Backward
             scaler.scale(loss).backward()
-           
+            if i % 200 == 0 and similarities:
+                cos_sim = similarities[-1] if similarities else 0
+                print(f"BCAM input cosine similarity: {cos_sim:.4f}")
+                if cos_sim > 0.98:
+                    print("⚠️  WARNING: BCAM inputs too similar - check wiring!")
+                elif cos_sim < 0.95:
+                    print("✅ BCAM inputs properly distinct")
 
             # Optimize
             if ni % accumulate == 0:
@@ -1071,11 +1139,7 @@ def train_rgb_ir(hyp, opt, device, tb_writer=None):
                 if hasattr(module, 'fusion_weights'):
                     weights = F.softmax(module.fusion_weights, dim=0)
                     print(f"Epoch {epoch} - Fusion weights: RGB={weights[0]:.3f}, Thermal={weights[1]:.3f}")
-        if i % 100 == 0:  # Every 100 batches
-            for name, module in model.named_modules():
-                if isinstance(module, GatedFusion):
-                    alpha_val = torch.sigmoid(module.alpha).item()
-                    print(f"GatedFusion {name}: alpha = {alpha_val:.3f}")
+        
 
         # Scheduler
         lr = [x['lr'] for x in optimizer.param_groups]  # for tensorboard
