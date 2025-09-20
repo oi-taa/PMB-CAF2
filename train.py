@@ -83,7 +83,7 @@ def train(hyp, opt, device, tb_writer=None):
     last = wdir / 'last.pt'
     best = wdir / 'best.pt'
     results_file = save_dir / 'results.txt'
-
+    early_stopping = EarlyStopping(patience=opt.patience) if opt.patience > 0 else None
     # Save run settings
     with open(save_dir / 'hyp.yaml', 'w') as f:
         yaml.safe_dump(hyp, f, sort_keys=False)
@@ -505,6 +505,8 @@ def train(hyp, opt, device, tb_writer=None):
             # Update best mAP
             fi = fitness(np.array(results).reshape(1, -1))  # weighted combination of [P, R, mAP@.5, mAP@.5-.95]
             if fi > best_fitness:
+                if early_stopping and early_stopping(fi, epoch):
+                    break
                 best_fitness = fi
             wandb_logger.end_epoch(best_result=best_fitness == fi)
 
