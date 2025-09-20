@@ -45,21 +45,16 @@ from utils.datasets import RandomSampler
 import global_var
 
 def log_confidence_stats(model, batch_idx, epoch):
-            """
-            Simple confidence logging - just verify SCP is working
-            
-            Args:
-                model: Your YOLO model containing SCP modules
-                batch_idx: Current batch index  
-                epoch: Current epoch
-            """
-            if batch_idx % 200 == 0:  # Log every 200 batches
-                for name, module in model.named_modules():
-                    if hasattr(module, '__class__') and 'SCP_Enhanced_Concat' in module.__class__.__name__:
-                        if hasattr(module, '_last_confidence'):
-                            conf = module._last_confidence.mean().item()
-                            print(f"Epoch {epoch}, Batch {batch_idx} - SCP confidence: {conf:.3f}")
-                            break  # Just log first SCP module found
+    """
+    Simple confidence logging - just verify SCP is working
+    """
+    if batch_idx % 200 == 0:  # Log every 200 batches
+        for name, module in model.named_modules():
+            if hasattr(module, '__class__') and 'SCP_Enhanced_Concat' in module.__class__.__name__:
+                if hasattr(module, '_last_confidence') and module._last_confidence is not None:
+                    conf = module._last_confidence.mean().item()
+                    print(f"Epoch {epoch}, Batch {batch_idx} - SCP confidence: {conf:.3f}")
+                    break  # Just log first SCP module found
 
 def train(hyp, opt, device, tb_writer=None):
     logger.info(colorstr('hyperparameters: ') + ', '.join(f'{k}={v}' for k, v in hyp.items()))
