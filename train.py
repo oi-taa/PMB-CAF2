@@ -197,6 +197,9 @@ def train(hyp, opt, device, tb_writer=None):
 
     # Resume
     start_epoch, best_fitness = 0, 0.0
+    best_score, wait = -float('inf'), 0
+    best_weights = None
+    warmup_epochs = 5
     if pretrained:
         # Optimizer
         if ckpt['optimizer'] is not None:
@@ -505,10 +508,27 @@ def train(hyp, opt, device, tb_writer=None):
             # Update best mAP
             fi = fitness(np.array(results).reshape(1, -1))  # weighted combination of [P, R, mAP@.5, mAP@.5-.95]
             if fi > best_fitness:
-                if early_stopping and early_stopping(fi, epoch):
-                    break
                 best_fitness = fi
             wandb_logger.end_epoch(best_result=best_fitness == fi)
+            if epoch >= warmup_epochs and opt.patience > 0:
+                current_score = results[7] if len(results) > 7 else fi  # mAP@0.5:0.95 or fitness
+                if current_score > best_score + opt.min_delta:
+                    best_score, wait = current_score, 0
+                    best_weights = deepcopy(model.module.state_dict() if hasattr(model, 'module') else model.state_dict())
+                    logger.info(f'New best mAP@0.5:0.95: {best_score:.4f}')
+                else:
+                    wait += 1
+                    logger.info(f'No improvement: {wait}/{opt.patience}')
+                
+                if wait >= opt.patience:
+                    logger.info(f'Early stopping at epoch {epoch}, best mAP@0.5:0.95={best_score:.4f}')
+                    if best_weights: 
+                        if hasattr(model, 'module'):
+                            model.module.load_state_dict(best_weights)
+                        else:
+                            model.load_state_dict(best_weights)
+                    break
+
 
             # Save model
             if (not opt.nosave) or (final_epoch and not opt.evolve):  # if save
@@ -870,7 +890,7 @@ def train_rgb_ir(hyp, opt, device, tb_writer=None):
                 f'Starting training for {epochs} epochs...')
     for epoch in range(start_epoch, epochs):  # epoch ------------------------------------------------------------------
         model.train()
-
+        
         # Update image weights (optional)
         if opt.image_weights:
             # Generate indices
@@ -1039,21 +1059,39 @@ def train_rgb_ir(hyp, opt, device, tb_writer=None):
                             try:
                                 best_ckpt = torch.load(best, map_location=device, weights_only=False)
                                 
-                                # Handle different checkpoint formats
+                                # Handle different checkpoint formats - FIXED VERSION
                                 if isinstance(best_ckpt, dict):
-                                    if 'ema' in best_ckpt:
-                                        ema.ema.load_state_dict(best_ckpt['ema'])
-                                    elif 'model' in best_ckpt:
-                                        if hasattr(best_ckpt['model'], 'state_dict'):
-                                            # Model object stored
-                                            model.load_state_dict(best_ckpt['model'].state_dict())
+                                    if 'ema' in best_ckpt and best_ckpt['ema'] is not None:
+                                        # Load EMA model
+                                        if hasattr(best_ckpt['ema'], 'state_dict'):
+                                            ema.ema.load_state_dict(best_ckpt['ema'].state_dict())
+                                        elif isinstance(best_ckpt['ema'], dict):
+                                            ema.ema.load_state_dict(best_ckpt['ema'])
                                         else:
-                                            # State dict stored
-                                            model.load_state_dict(best_ckpt['model'])
+                                            # EMA is a full model object
+                                            ema.ema = best_ckpt['ema'].float()
+                                    elif 'model' in best_ckpt:
+                                        # Load main model to EMA (since you're using ema.ema for evaluation)
+                                        if hasattr(best_ckpt['model'], 'state_dict'):
+                                            # Model object stored - extract state dict
+                                            model_state = best_ckpt['model'].state_dict()
+                                        elif isinstance(best_ckpt['model'], dict):
+                                            # State dict stored directly
+                                            model_state = best_ckpt['model']
+                                        else:
+                                            # Full model object stored - use it directly
+                                            ema.ema = best_ckpt['model'].float()
+                                            model_state = None
+                                        
+                                        # Load state dict if we extracted one
+                                        if model_state is not None:
+                                            ema.ema.load_state_dict(model_state)
                                 else:
-                                    # Direct model object
+                                    # Direct model object (old format)
                                     if hasattr(best_ckpt, 'state_dict'):
-                                        model.load_state_dict(best_ckpt.state_dict())
+                                        ema.ema.load_state_dict(best_ckpt.state_dict())
+                                    else:
+                                        ema.ema = best_ckpt.float()
                                 
                                 # Re-run evaluation with best model
                                 best_results, best_maps, best_times = test.test(data_dict,
@@ -1071,7 +1109,7 @@ def train_rgb_ir(hyp, opt, device, tb_writer=None):
                                 
                                 final_results = best_results
                                 final_times = best_times
-                                print(f"📊 Successfully loaded and evaluated BEST model")
+                                print(f"✅ Successfully loaded and evaluated BEST model")
                                 
                             except Exception as e:
                                 print(f"⚠️ Error loading best.pt: {e}")
@@ -1296,7 +1334,10 @@ if __name__ == '__main__':
     parser.add_argument('--bbox_interval', type=int, default=-1, help='Set bounding-box image logging interval for W&B')
     parser.add_argument('--save_period', type=int, default=-1, help='Log model after every "save_period" epoch')
     parser.add_argument('--artifact_alias', type=str, default="latest", help='version of dataset artifact to be used')
-    parser.add_argument('--patience', type=int, default=0, help='Early stopping patience')
+    parser.add_argument('--patience', type=int, default=0,
+                    help='early stopping patience (epochs without improvement, 0 disables)')
+    parser.add_argument('--min-delta', type=float, default=1e-4,
+                        help='minimum improvement in monitored metric to reset patience')
     opt = parser.parse_args()
 
     # FQY  Flag for visualizing the paired training imgs
