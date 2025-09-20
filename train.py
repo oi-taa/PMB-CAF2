@@ -9,7 +9,8 @@ import time
 from copy import deepcopy
 from pathlib import Path
 from threading import Thread
-
+import json
+from datetime import datetime
 
 import numpy as np
 import torch.distributed as dist
@@ -40,6 +41,83 @@ from utils.torch_utils import ModelEMA, select_device, intersect_dicts, torch_di
 from utils.wandb_logging.wandb_utils import WandbLogger, check_wandb_resume
 
 logger = logging.getLogger(__name__)
+
+    
+def save_final_results_only(save_dir, final_results, final_times, efficiency_metrics, opt):
+    """Save only final comprehensive results"""
+    save_dir = Path(save_dir)
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    
+    # Extract final metrics - handle tensors properly
+    if len(final_results) >= 11:
+        mp = float(final_results[0]) if hasattr(final_results[0], 'item') else float(final_results[0])
+        mr = float(final_results[1]) if hasattr(final_results[1], 'item') else float(final_results[1])
+        map50 = float(final_results[2]) if hasattr(final_results[2], 'item') else float(final_results[2])
+        map75 = float(final_results[3]) if hasattr(final_results[3], 'item') else float(final_results[3])
+        map_avg = float(final_results[4]) if hasattr(final_results[4], 'item') else float(final_results[4])
+        mAP_small = float(final_results[8]) if hasattr(final_results[8], 'item') else float(final_results[8])
+        mAP_medium = float(final_results[9]) if hasattr(final_results[9], 'item') else float(final_results[9])
+        mAP_large = float(final_results[10]) if hasattr(final_results[10], 'item') else float(final_results[10])
+    else:
+        mp, mr, map50, map75, map_avg = final_results[:5] if len(final_results) >= 5 else (0, 0, 0, 0, 0)
+        mp = float(mp) if hasattr(mp, 'item') else float(mp)
+        mr = float(mr) if hasattr(mr, 'item') else float(mr)
+        map50 = float(map50) if hasattr(map50, 'item') else float(map50)
+        map75 = float(map75) if hasattr(map75, 'item') else float(map75)
+        map_avg = float(map_avg) if hasattr(map_avg, 'item') else float(map_avg)
+        mAP_small = mAP_medium = mAP_large = 0.0
+    
+    # Create final results
+    final_comprehensive = {
+        'experiment_info': {
+            'timestamp': timestamp,
+            'method': 'PMB-CAF',
+            'dataset': Path(opt.data).stem,
+            'config': str(opt.cfg),
+            'weights': str(opt.weights),
+            'epochs': opt.epochs,
+            'batch_size': opt.batch_size,
+            'img_size': opt.img_size
+        },
+        'detection_performance': {
+            'mAP@0.5': map50,
+            'mAP@0.75': map75,
+            'mAP@0.5:0.95': map_avg,
+            'precision': mp,
+            'recall': mr
+        },
+        'size_based_performance': {
+            'mAP_small': mAP_small,
+            'mAP_medium': mAP_medium,
+            'mAP_large': mAP_large
+        },
+        'efficiency_metrics': efficiency_metrics,
+        'speed_metrics': {
+            'inference_time_ms': float(final_times[0]) if len(final_times) > 0 else 0.0,
+            'nms_time_ms': float(final_times[1]) if len(final_times) > 1 else 0.0,
+            'total_time_ms': float(final_times[2]) if len(final_times) > 2 else 0.0
+        },
+        'publication_ready_table': {
+            'Method': 'PMB-CAF',
+            'mAP@50': f"{map50:.3f}",
+            'mAP@75': f"{map75:.3f}",
+            'mAP@[0.5:0.95]': f"{map_avg:.3f}",
+            'mAP_S': f"{mAP_small:.3f}",
+            'mAP_M': f"{mAP_medium:.3f}",
+            'mAP_L': f"{mAP_large:.3f}",
+            'Params(M)': f"{efficiency_metrics['params_M']:.1f}",
+            'GFLOPs': f"{efficiency_metrics['gflops']:.1f}",
+            'FPS': f"{efficiency_metrics['fps']:.0f}"
+        }
+    }
+    
+    # Save main results file
+    final_file = save_dir / 'FINAL_RESULTS.json'
+    with open(final_file, 'w') as f:
+        json.dump(final_comprehensive, f, indent=2)
+    
+    print(f"\n💾 FINAL RESULTS ALSO SAVED TO: {final_file}")
+    return final_file
 
 from utils.datasets import RandomSampler
 import global_var
@@ -1177,6 +1255,7 @@ def train_rgb_ir(hyp, opt, device, tb_writer=None):
                                 json.dump(best_model_metrics, f, indent=2)
                             
                             print(f"\n📊 BEST model metrics saved to {save_dir / 'best_model_final_metrics.json'}")
+                            save_final_results_only(save_dir, final_results, final_times, efficiency_metrics, opt)
                             
                         except Exception as e:
                             print(f"Error computing final metrics: {e}")
@@ -1216,17 +1295,20 @@ def train_rgb_ir(hyp, opt, device, tb_writer=None):
                 best_fitness = fi
             wandb_logger.end_epoch(best_result=best_fitness == fi)
             if epoch >= warmup_epochs and opt.patience > 0:
-                current_score = results[7] if len(results) > 7 else fi  # mAP@0.5:0.95 or fitness
+                # Use mAP@0.5 (more stable than mAP@0.5:0.95) or fitness score
+                current_score = results[2] if len(results) > 2 else fi  # mAP@0.5 or fitness
+                current_score = float(current_score) if hasattr(current_score, 'item') else float(current_score)
+                
                 if current_score > best_score + opt.min_delta:
                     best_score, wait = current_score, 0
                     best_weights = deepcopy(model.module.state_dict() if hasattr(model, 'module') else model.state_dict())
-                    logger.info(f'New best mAP@0.5:0.95: {best_score:.4f}')
+                    logger.info(f'New best mAP@0.5: {best_score:.4f}')
                 else:
                     wait += 1
                     logger.info(f'No improvement: {wait}/{opt.patience}')
                 
                 if wait >= opt.patience:
-                    logger.info(f'Early stopping at epoch {epoch}, best mAP@0.5:0.95={best_score:.4f}')
+                    logger.info(f'Early stopping at epoch {epoch}, best mAP@0.5={best_score:.4f}')
                     if best_weights: 
                         if hasattr(model, 'module'):
                             model.module.load_state_dict(best_weights)
