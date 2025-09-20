@@ -43,7 +43,23 @@ logger = logging.getLogger(__name__)
 
 from utils.datasets import RandomSampler
 import global_var
-
+class EarlyStopping:
+    def __init__(self, patience=10):
+        self.patience = patience
+        self.best_fitness = 0.0
+        self.wait_count = 0
+        
+    def __call__(self, current_fitness, epoch):
+        if current_fitness > self.best_fitness:
+            self.best_fitness = current_fitness
+            self.wait_count = 0
+        else:
+            self.wait_count += 1
+        
+        if self.wait_count >= self.patience:
+            logger.info(f'Early stopping at epoch {epoch}!')
+            return True
+        return False
 def log_confidence_stats(model, batch_idx, epoch):
     """
     Simple confidence logging - just verify SCP is working
@@ -569,6 +585,7 @@ def train_rgb_ir(hyp, opt, device, tb_writer=None):
     last = wdir / 'last.pt'
     best = wdir / 'best.pt'
     results_file = save_dir / 'results.txt'
+    early_stopping = EarlyStopping(patience=opt.patience) if opt.patience > 0 else None
 
     # Save run settings
     with open(save_dir / 'hyp.yaml', 'w') as f:
@@ -1168,6 +1185,8 @@ def train_rgb_ir(hyp, opt, device, tb_writer=None):
             # Update best mAP
             fi = fitness(np.array(results[:8]).reshape(1, -1))  # weighted combination of [P, R, mAP@.5, mAP@.5-.95]
             if fi > best_fitness:
+                if early_stopping and early_stopping(fi, epoch):
+                    break
                 best_fitness = fi
             wandb_logger.end_epoch(best_result=best_fitness == fi)
 
@@ -1275,6 +1294,7 @@ if __name__ == '__main__':
     parser.add_argument('--bbox_interval', type=int, default=-1, help='Set bounding-box image logging interval for W&B')
     parser.add_argument('--save_period', type=int, default=-1, help='Log model after every "save_period" epoch')
     parser.add_argument('--artifact_alias', type=str, default="latest", help='version of dataset artifact to be used')
+    parser.add_argument('--patience', type=int, default=0, help='Early stopping patience')
     opt = parser.parse_args()
 
     # FQY  Flag for visualizing the paired training imgs
