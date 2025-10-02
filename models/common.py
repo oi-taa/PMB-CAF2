@@ -768,7 +768,7 @@ class BCAM(nn.Module):
     - Consistent 3-tuple output for debugging and orchestration flexibility
     """
     def __init__(self, d_model, num_heads=4, dropout=0.1, 
-                 vert_anchors=8, horz_anchors=8):
+                 vert_anchors=8, horz_anchors=8, learnable_scale = False):
         super(BCAM, self).__init__()
         self.d_model = d_model
         self.num_heads = num_heads
@@ -800,7 +800,14 @@ class BCAM(nn.Module):
         # outputs + ffn
         self.rgb_out = nn.Linear(d_model, d_model, bias=False)
         self.thermal_out = nn.Linear(d_model, d_model, bias=False)
-
+        self.learnable_scale = learnable_scale
+        if learnable_scale:
+            # Initialize at your empirically good value (0.1)
+            self.rgb_attn_scale = nn.Parameter(torch.tensor(0.1))
+            self.thermal_attn_scale = nn.Parameter(torch.tensor(0.1))
+        else:
+            self.register_buffer('rgb_attn_scale', torch.tensor(0.1))
+            self.register_buffer('thermal_attn_scale', torch.tensor(0.1))
         self.rgb_ffn = nn.Sequential(
             nn.Linear(d_model, d_model * 4),
             nn.GELU(),
@@ -920,7 +927,7 @@ class BCAM(nn.Module):
             rgb_attended = self._multi_head_attention(rgb_q, thermal_k, thermal_v, return_attn=False)
 
         rgb_attended = self.rgb_out(rgb_attended)    # (B, L, C)
-        rgb_tokens = rgb_tokens + 0.1 * rgb_attended       # Residual connection
+        rgb_tokens = rgb_tokens + self.rgb_attn_scale * rgb_attended     # Residual connection
 
         # Thermal -> RGB attention
         thermal_q = self.thermal_q(thermal_normed)   # (B, L, C)
@@ -933,7 +940,7 @@ class BCAM(nn.Module):
             thermal_attended = self._multi_head_attention(thermal_q, rgb_k, rgb_v, return_attn=False)
 
         thermal_attended = self.thermal_out(thermal_attended)  # (B, L, C)
-        thermal_tokens = thermal_tokens + 0.1 * thermal_attended      # Residual connection
+        thermal_tokens = thermal_tokens + self.thermal_attn_scale * thermal_attended   # Residual connection
         '''print(f"🎯 ATTENTION DEBUG:")
         print(f"  RGB features: min={rgb_q.min():.3f}, max={rgb_q.max():.3f}, mean={rgb_q.mean():.3f}")
         print(f"  Thermal K: min={thermal_k.min():.3f}, max={thermal_k.max():.3f}, mean={thermal_k.mean():.3f}")

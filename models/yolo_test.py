@@ -374,38 +374,11 @@ class Model(nn.Module):
                     x = x[0] + x[1]
                 else:
                     fused_contexts[scale] = x
-
             elif isinstance(m, BCAM):
-                # Standard BCAM - uses internal pos embeddings
-                if not isinstance(x, (tuple, list)) or len(x) != 2:
-                    raise RuntimeError(f"BCAM at layer {i} expects tuple input (rgb, thermal), got {type(x)}")
-                x = m(x, pos_rgb=None, pos_thermal=None)
-                
-                # Store fused result for progressive chain
+                x = m(x)
                 if isinstance(x, tuple) and len(x) == 3:
-                    rgb_out, thermal_out, fused_out = x
-                    try:
-                        scale = self.get_module_scale(fused_out.shape[1])
-                        fused_contexts[scale] = fused_out
-                        x = fused_out  # Use fused for next layer
-                    except ValueError:
-                        # Non-standard BCAM, skip storing
-                        x = fused_out
-                elif isinstance(x, tuple) and len(x) == 2:
-                    # Fallback for 2-tuple (current BCAM behavior)
-                    try:
-                        scale = self.get_module_scale(x[0].shape[1])
-                        fused_contexts[scale] = x[0] + x[1]
-                        x = x[0] + x[1]
-                    except ValueError:
-                        x = x[0] + x[1]
-                else:
-                    # Single tensor output
-                    try:
-                        scale = self.get_module_scale(x.shape[1])
-                        fused_contexts[scale] = x
-                    except ValueError:
-                        pass
+                    x = torch.cat(x, dim=1)  # Concatenate all 3 (3072 channels)
+            
            
             elif isinstance(m, UCAM):
                 # Unidirectional BCAM - uses internal pos embeddings
@@ -508,7 +481,7 @@ class Model(nn.Module):
     def info(self, verbose=False, img_size=640):  # print model information
         model_info(self, verbose, img_size)
 
-#
+# """
 # class TwoStreamModel(nn.Module):
 #
 #     def __init__(self, cfg='yolov5s.yaml', ch=3, nc=None, anchors=None):  # model, input channels, number of classes

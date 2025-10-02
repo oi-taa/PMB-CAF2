@@ -1140,6 +1140,15 @@ def train_rgb_ir(hyp, opt, device, tb_writer=None):
                                             wandb_logger=wandb_logger,
                                             compute_loss=compute_loss,
                                             is_coco=is_coco)
+            
+                for name, module in ema.ema.named_modules():  # Use ema.ema, not model
+                    if isinstance(module, BCAM) and hasattr(module, 'learnable_scale') and module.learnable_scale:
+                        rgb_scale = module.rgb_attn_scale.item()
+                        thermal_scale = module.thermal_attn_scale.item()
+                        logger.info(f'Epoch {epoch} - BCAM scales: RGB={rgb_scale:.4f}, Thermal={thermal_scale:.4f}')
+                        if tb_writer:
+                            tb_writer.add_scalar('bcam/rgb_attention_scale', rgb_scale, epoch)
+                            tb_writer.add_scalar('bcam/thermal_attention_scale', thermal_scale, epoch)
                 
                 # Extract metrics from enhanced results
                 if len(results) >= 11:  # Enhanced results with size metrics
@@ -1298,7 +1307,7 @@ def train_rgb_ir(hyp, opt, device, tb_writer=None):
                     mp, mr, map50, map75, map_avg = results[:5] if len(results) >= 5 else (0, 0, 0, 0, 0)
                     mAP_small, mAP_medium, mAP_large = 0.0, 0.0, 0.0
                     print("Warning: Enhanced results with size metrics not available")
-
+            
             # Write results to file (use core results for compatibility)
             core_results = results[:8] if len(results) >= 8 else results
             with open(results_file, 'a') as f:
