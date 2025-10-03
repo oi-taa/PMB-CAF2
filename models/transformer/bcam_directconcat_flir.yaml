@@ -1,4 +1,4 @@
-# Progressive P5→P4→P3 Full Cascade with FiLM
+# Progressive P5→P4→P3 Full Cascade with Simple Addition
 nc: 3
 depth_multiple: 1.00
 width_multiple: 1.00
@@ -43,32 +43,32 @@ backbone:
     # Step 2: P4 Progressive (receives P5 context)
     [[6,16], 1, Progressive_SimpleAdd, [512, 1024]],  # 21: P4 with simple add
     
-    # Step 3: P3 Progressive (receives P4 context, NO attention - just FiLM + projection)
-    [[4,14], 1, Concat, [1]],                        # 22: P3 just concat (like your current)
-    [-1, 1, Conv, [256, 1, 1]], 
+    # Step 3: P3 Concat + Project (no progressive context)
+    [[4,14], 1, Concat, [1]],                    # 22: P3 concat (512 channels)
+    [-1, 1, Conv, [256, 1, 1]],                  # 23: P3 projected (256 channels)
   ]
 
 head:
   [
-    # Use P5, P4 progressive, P3 progressive outputs
-    [20, 1, Conv, [512, 1, 1]],                     # 23: P5 projection
-    [-1, 1, nn.Upsample, [None, 2, 'nearest']],     # 24: P5→P4
-    [[-1,21], 1, Concat, [1]],                      # 25: P5_up + P4_progressive
-    [-1, 3, C3, [512, False]],                      # 26: P4 processed
+    # Use P5, P4 progressive, P3 concat outputs
+    [20, 1, Conv, [512, 1, 1]],                     # 24: P5 projection
+    [-1, 1, nn.Upsample, [None, 2, 'nearest']],     # 25: P5→P4
+    [[-1,21], 1, Concat, [1]],                      # 26: P5_up + P4_progressive
+    [-1, 3, C3, [512, False]],                      # 27: P4 processed
 
-    [-1, 1, Conv, [256, 1, 1]],                     # 27: P4 projection
-    [-1, 1, nn.Upsample, [None, 2, 'nearest']],     # 28: P4→P3
-    [[-1,22], 1, Concat, [1]],                      # 29: P4_up + P3_progressive
-    [-1, 3, C3, [256, False]],                      # 30: P3 final
+    [-1, 1, Conv, [256, 1, 1]],                     # 28: P4 projection
+    [-1, 1, nn.Upsample, [None, 2, 'nearest']],     # 29: P4→P3
+    [[-1,23], 1, Concat, [1]],                      # 30: P4_up + P3_projected (FIXED: 23 not 22)
+    [-1, 3, C3, [256, False]],                      # 31: P3 final
 
     # Downsample path
-    [-1, 1, Conv, [256, 3, 2]],                     # 31: P3→P4
-    [[-1,26], 1, Concat, [1]],                      # 32: P3_down + P4_processed
-    [-1, 3, C3, [512, False]],                      # 33: P4 final
+    [-1, 1, Conv, [256, 3, 2]],                     # 32: P3→P4
+    [[-1,27], 1, Concat, [1]],                      # 33: P3_down + P4_processed
+    [-1, 3, C3, [512, False]],                      # 34: P4 final
 
-    [-1, 1, Conv, [512, 3, 2]],                     # 34: P4→P5
-    [[-1,23], 1, Concat, [1]],                      # 35: P4_down + P5_projected
-    [-1, 3, C3, [1024, False]],                     # 36: P5 final
+    [-1, 1, Conv, [512, 3, 2]],                     # 35: P4→P5
+    [[-1,24], 1, Concat, [1]],                      # 36: P4_down + P5_projected (FIXED: 24 not 23)
+    [-1, 3, C3, [1024, False]],                     # 37: P5 final
 
-    [[30, 33, 36], 1, Detect, [nc, anchors]],       # Detection heads
+    [[31, 34, 37], 1, Detect, [nc, anchors]],       # Detection heads
   ]
