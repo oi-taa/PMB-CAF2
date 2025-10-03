@@ -335,15 +335,13 @@ class Model(nn.Module):
                 
                 # Determine required coarse context
                 if scale == 'P4':
-                    coarse_context = fused_contexts.get('P5')
-                    expected_coarse = 1024  # From P5
-                    if coarse_context is None:
-                        raise RuntimeError(f"P4 BCAM_Progressive at layer {i} missing P5 context")
+                    # The coarse context should be the projected P5 (layer right before this BCAM_Progressive)
+                    # In your YAML structure, that's i-1
+                    coarse_idx = i - 1
+                    coarse_context = y[coarse_idx]
                 elif scale == 'P3':
-                    coarse_context = fused_contexts.get('P4')
-                    expected_coarse = 512
-                    if coarse_context is None:
-                        raise RuntimeError(f"P3 BCAM_Progressive at layer {i} missing P4 context")
+                    coarse_idx = i - 1
+                    coarse_context = y[coarse_idx]
                 else:
                     raise RuntimeError(f"BCAM_Progressive not supported at scale {scale}")
                 
