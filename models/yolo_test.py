@@ -690,6 +690,7 @@ def parse_model(d, ch):  # model_dict, input_channels(3)
             c2 = ch[f[0]]
             args = [c2]
         elif m is BCAM:
+            print(f"Layer {i}: BCAM with f={f}, len(ch)={len(ch)}")
             d_model = ch[f[0]]        # 1024  (input per stream)
             c2 = 3 * d_model          # 3072  (output concat of 3)
             args = [d_model] + args[1:] if len(args) > 1 else [d_model]
