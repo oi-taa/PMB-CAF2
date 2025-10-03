@@ -775,7 +775,9 @@ class BCAM(nn.Module):
         self.head_dim = d_model // num_heads
         self.scale = math.sqrt(self.head_dim)
         assert d_model % num_heads == 0
-        self.fusion_weights = nn.Parameter(torch.tensor([0.5, 0.5], dtype=torch.float32))
+        #og weight avging - self.fusion_weights = nn.Parameter(torch.tensor([0.5, 0.5], dtype=torch.float32))
+        self.fusion_proj = nn.Conv2d(d_model * 2, d_model, kernel_size=1, bias=False)
+        nn.init.xavier_uniform_(self.fusion_proj.weight)
         # spatial handling
         self.vert_anchors = vert_anchors
         self.horz_anchors = horz_anchors
@@ -968,18 +970,18 @@ class BCAM(nn.Module):
         rgb_final = F.interpolate(rgb_spatial, size=(h, w), mode='bilinear', align_corners=False)
         thermal_final = F.interpolate(thermal_spatial, size=(h, w), mode='bilinear', align_corners=False)
         
-        fusion_w = F.softmax(self.fusion_weights, dim=0)
+        '''fusion_w = F.softmax(self.fusion_weights, dim=0)
         cross_modal = rgb_final * thermal_final
         fused_final = (fusion_w[0] * rgb_final + 
                     fusion_w[1] * thermal_final + 
-                    0.1 * cross_modal)
-        '''fused_concat = torch.cat([rgb_final, thermal_final], dim=1) 
+                    0.1 * cross_modal)'''
+        fused_concat = torch.cat([rgb_final, thermal_final], dim=1) 
         if not hasattr(self, 'fusion_proj'):
             # Add this to __init__ instead:
             # self.fusion_proj = nn.Conv2d(d_model * 2, d_model, 1, bias=False)
             pass
             
-        fused_final = self.fusion_proj(fused_concat)  # (B, C, H, W)'''
+        fused_final = self.fusion_proj(fused_concat)  # (B, C, H, W)
 
         if return_attn:
             attn_info = {
