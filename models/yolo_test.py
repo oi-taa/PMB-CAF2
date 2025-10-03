@@ -325,6 +325,9 @@ class Model(nn.Module):
 
             # === PMB-CAF Progressive Orchestration ===
             if isinstance(m, BCAM_Progressive):
+                print(f"Layer {i}: BCAM_Progressive")
+                print(f"  y list length: {len(y)}")
+                print(f"  Checking y[21]: {y[21].shape if y[21] is not None else 'None'}")
                 # Determine input channels and scale
                 if isinstance(x, (tuple, list)):
                     input_channels = x[0].shape[1]
@@ -345,7 +348,10 @@ class Model(nn.Module):
                 else:
                     raise RuntimeError(f"BCAM_Progressive not supported at scale {scale}")
                 
-                
+                if coarse_context is None:
+                    print(f"ERROR: coarse_context is None!")
+                    print(f"Available y indices: {[idx for idx, val in enumerate(y) if val is not None]}")
+                    raise RuntimeError("Context is None")
                 
                 
                 # Progressive fusion with external pos control
