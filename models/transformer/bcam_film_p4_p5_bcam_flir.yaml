@@ -1,0 +1,77 @@
+# Progressive BCAM with FiLM - P5 context injected into P4
+nc: 3
+depth_multiple: 1.00
+width_multiple: 1.00
+
+anchors:
+  - [10,13, 16,30, 33,23]
+  - [30,61, 62,45, 59,119]  
+  - [116,90, 156,198, 373,326]
+
+backbone:
+  [
+    ######### Dual Streams (0-19) #############
+    # RGB Stream: 0-9
+    [-1, 1, Focus, [64, 3]],        # 0
+    [-1, 1, Conv, [128, 3, 2]],     # 1
+    [-1, 3, C3, [128]],             # 2
+    [-1, 1, Conv, [256, 3, 2]],     # 3
+    [-1, 9, C3, [256]],             # 4 <- RGB P3
+    [-1, 1, Conv, [512, 3, 2]],     # 5
+    [-1, 9, C3, [512]],             # 6 <- RGB P4
+    [-1, 1, Conv, [1024, 3, 2]],    # 7
+    [-1, 1, SPP, [1024, [5, 9, 13]]], # 8
+    [-1, 3, C3, [1024, False]],     # 9 <- RGB P5
+
+    # Thermal Stream: 10-19
+    [-4, 1, Focus, [64, 3]],        # 10
+    [-1, 1, Conv, [128, 3, 2]],     # 11
+    [-1, 3, C3, [128]],             # 12
+    [-1, 1, Conv, [256, 3, 2]],     # 13
+    [-1, 9, C3, [256]],             # 14 <- Thermal P3
+    [-1, 1, Conv, [512, 3, 2]],     # 15
+    [-1, 9, C3, [512]],             # 16 <- Thermal P4
+    [-1, 1, Conv, [1024, 3, 2]],    # 17
+    [-1, 1, SPP, [1024, [5, 9, 13]]], # 18
+    [-1, 3, C3, [1024, False]],     # 19 <- Thermal P5
+
+    ######### Progressive Fusion #############
+    
+    # Step 1: P5 BCAM (no context available)
+    [[9,19], 1, BCAM_SingleOutput, [1024]],  # 20: P5 fused
+    
+    # Step 2: Project P5 context for P4
+    [20, 1, Conv, [512, 1, 1]],              # 21: Project P5 1024→512 (coarse_channels for P4)
+    
+    # Step 3: P4 Progressive BCAM (receives P5 context)
+    [[6,16], 1, BCAM_Progressive, [512, 512]], # 22: P4 progressive (d_model=512, coarse_channels=512)
+    
+    # Step 4: P3 Simple Concat (no attention)
+    [[4,14], 1, Concat, [1]],                # 23: P3 concat
+    [-1, 1, Conv, [256, 1, 1]],              # 24: Project to 256
+  ]
+
+head:
+  [
+    # Use P5, P4 progressive, P3 concat outputs
+    [20, 1, Conv, [512, 1, 1]],                     # 25: P5 projection
+    [-1, 1, nn.Upsample, [None, 2, 'nearest']],     # 26: P5→P4
+    [[-1,22], 1, Concat, [1]],                      # 27: P5_up + P4_progressive
+    [-1, 3, C3, [512, False]],                      # 28: P4 processed
+
+    [-1, 1, Conv, [256, 1, 1]],                     # 29: P4 projection
+    [-1, 1, nn.Upsample, [None, 2, 'nearest']],     # 30: P4→P3
+    [[-1,24], 1, Concat, [1]],                      # 31: P4_up + P3_concat
+    [-1, 3, C3, [256, False]],                      # 32: P3 final
+
+    # Downsample path
+    [-1, 1, Conv, [256, 3, 2]],                     # 33: P3→P4
+    [[-1,28], 1, Concat, [1]],                      # 34: P3_down + P4_processed
+    [-1, 3, C3, [512, False]],                      # 35: P4 final
+
+    [-1, 1, Conv, [512, 3, 2]],                     # 36: P4→P5
+    [[-1,25], 1, Concat, [1]],                      # 37: P4_down + P5_projected
+    [-1, 3, C3, [1024, False]],                     # 38: P5 final
+
+    [[32, 35, 38], 1, Detect, [nc, anchors]],       # Detection heads
+  ]
