@@ -389,7 +389,13 @@ class Model(nn.Module):
                         print(f"  Output: single tensor {x.shape}")
                         print(f"  Output stats: min={x.min():.3f}, max={x.max():.3f}, mean={x.mean():.3f}")
             elif isinstance(m, Progressive_Projection):
-                scale = self.get_module_scale(x[0].shape[1] if isinstance(x, tuple) else x.shape[1])
+                # x could be tuple or list
+                if isinstance(x, (tuple, list)):
+                    input_channels = x[0].shape[1]
+                else:
+                    input_channels = x.shape[1]
+                
+                scale = self.get_module_scale(input_channels)
                 
                 if scale == 'P3':
                     coarse_context = fused_contexts.get('P4')
@@ -397,7 +403,11 @@ class Model(nn.Module):
                         raise RuntimeError(f"P3 Progressive_Projection at layer {i} missing P4 context")
                 
                 x = m(x, coarse_context=coarse_context)
-                # Returns single tensor, no tuple handling needed
+                # Returns single tensor, store in fused_contexts
+                try:
+                    fused_contexts[scale] = x
+                except:
+                    pass
             elif isinstance(m, Progressive_SimpleAdd):
                 # Same logic as BCAM_Progressive
                 scale = self.get_module_scale(...)
