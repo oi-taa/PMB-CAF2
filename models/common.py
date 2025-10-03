@@ -973,6 +973,13 @@ class BCAM(nn.Module):
         fused_final = (fusion_w[0] * rgb_final + 
                     fusion_w[1] * thermal_final + 
                     0.1 * cross_modal)
+        '''fused_concat = torch.cat([rgb_final, thermal_final], dim=1) 
+        if not hasattr(self, 'fusion_proj'):
+            # Add this to __init__ instead:
+            # self.fusion_proj = nn.Conv2d(d_model * 2, d_model, 1, bias=False)
+            pass
+            
+        fused_final = self.fusion_proj(fused_concat)  # (B, C, H, W)'''
 
         if return_attn:
             attn_info = {
