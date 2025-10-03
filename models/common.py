@@ -1324,3 +1324,111 @@ class BCAM_Progressive(BCAM):
             # Parent returns (rgb, thermal, fused)
             rgb_out, thermal_out, fused_out = parent_out
             return rgb_out, thermal_out, fused_out
+class Progressive_SimpleAdd(nn.Module):
+    """
+    Progressive context injection with simple addition (no FiLM)
+    Just adds projected context to features before BCAM attention
+    
+    Returns 3-tuple like BCAM for consistency
+    """
+    def __init__(self, d_model, num_heads=4, dropout=0.1, 
+                 vert_anchors=8, horz_anchors=8, coarse_channels=None):
+        super().__init__()
+        self.d_model = d_model
+        
+        # Project coarse context to match d_model
+        if coarse_channels:
+            self.adapter = Adapter1x1(coarse_channels, d_model)
+            self.alpha = nn.Parameter(torch.tensor(0.1))  # Learnable mixing weight
+        else:
+            self.adapter = None
+        
+        # Standard BCAM components
+        self.bcam = BCAM(d_model, num_heads, dropout, vert_anchors, horz_anchors)
+    
+    def forward(self, x, coarse_context=None, pos_rgb=None, pos_thermal=None, return_attn=False):
+        rgb_fea, thermal_fea = x[0], x[1]
+        
+        if coarse_context is None:
+            raise RuntimeError("Progressive_SimpleAdd requires coarse_context")
+        if self.adapter is None:
+            raise RuntimeError("Progressive_SimpleAdd not configured with adapter")
+        
+        # Upsample coarse to fine resolution
+        if coarse_context.shape[-2:] != rgb_fea.shape[-2:]:
+            coarse_up = F.interpolate(coarse_context, size=rgb_fea.shape[-2:],
+                                    mode='bilinear', align_corners=False)
+        else:
+            coarse_up = coarse_context
+        
+        # Project context
+        coarse_proj = self.adapter(coarse_up)
+        
+        # Simple addition (no FiLM modulation)
+        rgb_fea = rgb_fea + self.alpha * coarse_proj
+        thermal_fea = thermal_fea + self.alpha * coarse_proj
+        
+        # Standard BCAM attention on context-enriched features
+        return self.bcam((rgb_fea, thermal_fea), pos_rgb, pos_thermal, return_attn)
+
+
+class Progressive_Projection(nn.Module):
+    """
+    Progressive context injection WITHOUT attention - for P3 scale
+    Only applies FiLM modulation + projection, skips cross-attention
+    
+    Returns single fused tensor (not 3-tuple like BCAM)
+    """
+    def __init__(self, d_model, coarse_channels):
+        super().__init__()
+        self.d_model = d_model
+        
+        # Adapter to project coarse context
+        self.adapter = Adapter1x1(coarse_channels, d_model)
+        
+        # FiLM for each modality
+        self.rgb_film = FiLMModulation(d_model, d_model)
+        self.thermal_film = FiLMModulation(d_model, d_model)
+        
+        # Simple fusion projection (no attention)
+        self.fusion_proj = nn.Conv2d(d_model * 2, d_model, kernel_size=1, bias=False)
+        nn.init.xavier_uniform_(self.fusion_proj.weight)
+    
+    def forward(self, x, coarse_context=None):
+        """
+        x: tuple of (rgb_features, thermal_features)
+        coarse_context: context from P4
+        
+        Returns: single fused tensor (B, d_model, H, W)
+        """
+        rgb_fea, thermal_fea = x[0], x[1]
+        
+        # Validation
+        assert rgb_fea.shape[1] == self.d_model
+        assert thermal_fea.shape[1] == self.d_model
+        if coarse_context is None:
+            raise RuntimeError("Progressive_Projection requires coarse_context")
+        
+        # Upsample coarse to fine resolution if needed
+        if coarse_context.shape[-2:] != rgb_fea.shape[-2:]:
+            coarse_up = F.interpolate(coarse_context, size=rgb_fea.shape[-2:],
+                                    mode='bilinear', align_corners=False)
+        else:
+            coarse_up = coarse_context
+        
+        # Project coarse context
+        coarse_proj = self.adapter(coarse_up)
+        
+        # Generate FiLM parameters
+        rgb_scale, rgb_shift = self.rgb_film(coarse_proj)
+        thermal_scale, thermal_shift = self.thermal_film(coarse_proj)
+        
+        # Apply FiLM modulation
+        rgb_modulated = rgb_fea * (1 + rgb_scale) + rgb_shift
+        thermal_modulated = thermal_fea * (1 + thermal_scale) + thermal_shift
+        
+        # Simple concatenation + projection (NO attention)
+        fused_concat = torch.cat([rgb_modulated, thermal_modulated], dim=1)
+        fused = self.fusion_proj(fused_concat)
+        
+        return fused

@@ -388,7 +388,24 @@ class Model(nn.Module):
                     else:
                         print(f"  Output: single tensor {x.shape}")
                         print(f"  Output stats: min={x.min():.3f}, max={x.max():.3f}, mean={x.mean():.3f}")
-            
+            elif isinstance(m, Progressive_Projection):
+                scale = self.get_module_scale(x[0].shape[1] if isinstance(x, tuple) else x.shape[1])
+                
+                if scale == 'P3':
+                    coarse_context = fused_contexts.get('P4')
+                    if coarse_context is None:
+                        raise RuntimeError(f"P3 Progressive_Projection at layer {i} missing P4 context")
+                
+                x = m(x, coarse_context=coarse_context)
+                # Returns single tensor, no tuple handling needed
+            elif isinstance(m, Progressive_SimpleAdd):
+                # Same logic as BCAM_Progressive
+                scale = self.get_module_scale(...)
+                coarse_context = fused_contexts.get('P5')
+                x = m(x, coarse_context=coarse_context, pos_rgb=None, pos_thermal=None)
+                
+                if isinstance(x, tuple) and len(x) == 3:
+                    x = x[2]  # Use fused output
             # Standard BCAM handling (if you still have any)
             elif isinstance(m, BCAM):
                 if debug:
@@ -742,6 +759,16 @@ def parse_model(d, ch):  # model_dict, input_channels(3)
             
             # Don't use args at all - d_model comes from ch, mode is fixed
             m_ = BCAM_SingleOutput(c2, output_mode='fused')
+        elif m is Progressive_Projection:
+            c2 = ch[f[0]]  # Output channels match input
+            d_model = args[0] if len(args) > 0 else c2
+            coarse_channels = args[1] if len(args) > 1 else c2
+            m_ = m(d_model, coarse_channels)
+        elif m is Progressive_SimpleAdd:
+            c2 = ch[f[0]]
+            d_model = args[0] if len(args) > 0 else c2
+            coarse_channels = args[1] if len(args) > 1 else c2
+            m_ = m(d_model, 4, 0.1, 8, 8, coarse_channels)
         elif m is UCAM:
             c2 = ch[f[0]]
             m_ = m(c2, *args[1:])
