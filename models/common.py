@@ -782,8 +782,11 @@ class BCAM(nn.Module):
         self.avgpool = nn.AdaptiveAvgPool2d((vert_anchors, horz_anchors))
 
         # internal pos embeddings (fallback)
-        self.rgb_pos_embed     = nn.Parameter(torch.randn(1, d_model, vert_anchors, horz_anchors) * 0.02)
-        self.thermal_pos_embed = nn.Parameter(torch.randn(1, d_model, vert_anchors, horz_anchors) * 0.02)
+        self.spatial_pos_embed = nn.Parameter(
+        torch.randn(1, d_model, vert_anchors, horz_anchors) * 0.02
+        )
+        self.rgb_modality_token = nn.Parameter(torch.randn(1, d_model, 1, 1) * 0.02)
+        self.thermal_modality_token = nn.Parameter(torch.randn(1, d_model, 1, 1) * 0.02)
 
         # separate norms for RGB vs Thermal
         self.rgb_norm1 = nn.LayerNorm(d_model)
@@ -899,14 +902,21 @@ class BCAM(nn.Module):
         rgb_pooled = self.avgpool(rgb_fea)
         thermal_pooled = self.avgpool(thermal_fea)
 
-        # Positional encoding policy: external overrides internal
-        use_rgb_pos = pos_rgb if pos_rgb is not None else getattr(self, 'rgb_pos_embed', None)
-        use_th_pos  = pos_thermal if pos_thermal is not None else getattr(self, 'thermal_pos_embed', None)
-
-        if use_rgb_pos is not None:
-            rgb_pooled = self._add_pos_encoding(rgb_pooled, use_rgb_pos)
-        if use_th_pos is not None:
-            thermal_pooled = self._add_pos_encoding(thermal_pooled, use_th_pos)
+        if pos_rgb is not None and pos_thermal is not None:
+            # External override
+            rgb_pooled = self._add_pos_encoding(rgb_pooled, pos_rgb)
+            thermal_pooled = self._add_pos_encoding(thermal_pooled, pos_thermal)
+        else:
+            # Use internal shared spatial + modality tokens
+            spatial_pos = self.spatial_pos_embed.to(device=rgb_pooled.device, dtype=rgb_pooled.dtype)
+            
+            if spatial_pos.shape[-2:] != rgb_pooled.shape[-2:]:
+                spatial_pos = F.interpolate(spatial_pos, size=rgb_pooled.shape[-2:], 
+                                        mode='bilinear', align_corners=False)
+            
+            # Shared spatial + modality-specific tokens
+            rgb_pooled = rgb_pooled + spatial_pos + self.rgb_modality_token
+            thermal_pooled = thermal_pooled + spatial_pos + self.thermal_modality_token
 
         # Convert to tokens ONCE: (B, C, H, W) -> (B, L, C)
         rgb_tokens = rgb_pooled.view(bs, c, -1).permute(0, 2, 1)

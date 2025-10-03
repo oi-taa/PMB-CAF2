@@ -207,8 +207,6 @@ class Model(nn.Module):
         print("================================\n")
         # print(self.model)
         self.names = [str(i) for i in range(self.yaml['nc'])]  # default names
-        # logger.info([x.shape for x in self.forward(torch.zeros(1, ch, 64, 64))])
-        self._init_positional_embeddings()
 
         # Build strides, anchors
         m = self.model[-1]  # Detect()
@@ -251,21 +249,6 @@ class Model(nn.Module):
         else:
             return self.forward_once(x, x2, profile)  # single-scale inference, train
         
-    def _init_positional_embeddings(self):
-        """Initialize central positional embeddings for all scales and modalities"""
-        # For YOLOv5l (width_multiple = 1.0) 
-        self.pos_P5_rgb = nn.Parameter(torch.randn(1, 1024, 8, 8) * 0.02)     # P5: 1024 channels
-        self.pos_P5_thermal = nn.Parameter(torch.randn(1, 1024, 8, 8) * 0.02) # P5: 1024 channels
-        self.pos_P4_rgb = nn.Parameter(torch.randn(1, 512, 8, 8) * 0.02)      # P4: 512 channels
-        self.pos_P4_thermal = nn.Parameter(torch.randn(1, 512, 8, 8) * 0.02)  # P4: 512 channels
-        self.pos_P3_rgb = nn.Parameter(torch.randn(1, 256, 8, 8) * 0.02)      # P3: 256 channels
-        self.pos_P3_thermal = nn.Parameter(torch.randn(1, 256, 8, 8) * 0.02)  # P3: 256 channels
-        
-        self.pos_embs = {
-            'P5': {'rgb': self.pos_P5_rgb, 'thermal': self.pos_P5_thermal},
-            'P4': {'rgb': self.pos_P4_rgb, 'thermal': self.pos_P4_thermal},
-            'P3': {'rgb': self.pos_P3_rgb, 'thermal': self.pos_P3_thermal}
-        }
 
     def get_module_scale(self, channels):
         """Infer pyramid scale from channel dimensions"""
