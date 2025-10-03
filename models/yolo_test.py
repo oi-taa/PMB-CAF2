@@ -378,7 +378,11 @@ class Model(nn.Module):
                         print(f"  Input: single tensor {x.shape}")
                 
                 x = m(x)
-                
+                try:
+                    scale = self.get_module_scale(x.shape[1])
+                    fused_contexts[scale] = x  # Store P5 output here
+                except ValueError:
+                    pass
                 if debug:
                     if isinstance(x, tuple):
                         print(f"  ERROR: Output is tuple with {len(x)} elements!")
