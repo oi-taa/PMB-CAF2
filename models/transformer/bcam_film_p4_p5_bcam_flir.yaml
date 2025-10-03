@@ -44,7 +44,7 @@ backbone:
     [20, 1, Conv, [512, 1, 1]],              # 21: Project P5 1024→512 (coarse_channels for P4)
     
     # Step 3: P4 Progressive BCAM (receives P5 context)
-    [[6,16], 1, BCAM_Progressive, [512, 512]], # 22: P4 progressive (d_model=512, coarse_channels=512)
+    [[6,16], 1, BCAM_Progressive, [512, 1024]], # 22: P4 progressive (d_model=512, coarse_channels=512)
     
     # Step 4: P3 Simple Concat (no attention)
     [[4,14], 1, Concat, [1]],                # 23: P3 concat

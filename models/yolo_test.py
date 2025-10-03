@@ -325,9 +325,6 @@ class Model(nn.Module):
 
             # === PMB-CAF Progressive Orchestration ===
             if isinstance(m, BCAM_Progressive):
-                print(f"Layer {i}: BCAM_Progressive")
-                print(f"  y list length: {len(y)}")
-                print(f"  Checking y[21]: {y[21].shape if y[21] is not None else 'None'}")
                 # Determine input channels and scale
                 if isinstance(x, (tuple, list)):
                     input_channels = x[0].shape[1]
@@ -338,20 +335,19 @@ class Model(nn.Module):
                 
                 # Determine required coarse context
                 if scale == 'P4':
-                    # The coarse context should be the projected P5 (layer right before this BCAM_Progressive)
-                    # In your YAML structure, that's i-1
-                    coarse_idx = i - 1
-                    coarse_context = y[coarse_idx]
+                    coarse_context = fused_contexts.get('P5')
+                    expected_coarse = 1024  # From P5
+                    if coarse_context is None:
+                        raise RuntimeError(f"P4 BCAM_Progressive at layer {i} missing P5 context")
                 elif scale == 'P3':
-                    coarse_idx = i - 1
-                    coarse_context = y[coarse_idx]
+                    coarse_context = fused_contexts.get('P4')
+                    expected_coarse = 512
+                    if coarse_context is None:
+                        raise RuntimeError(f"P3 BCAM_Progressive at layer {i} missing P4 context")
                 else:
                     raise RuntimeError(f"BCAM_Progressive not supported at scale {scale}")
                 
-                if coarse_context is None:
-                    print(f"ERROR: coarse_context is None!")
-                    print(f"Available y indices: {[idx for idx, val in enumerate(y) if val is not None]}")
-                    raise RuntimeError("Context is None")
+                
                 
                 
                 # Progressive fusion with external pos control
