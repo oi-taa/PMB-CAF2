@@ -349,12 +349,9 @@ class Model(nn.Module):
                 
                 
                 
-                # Get positional embeddings for current scale
-                pos_rgb = self.pos_embs[scale]['rgb']
-                pos_thermal = self.pos_embs[scale]['thermal']
                 
                 # Progressive fusion with external pos control
-                x = m(x, coarse_context=coarse_context, pos_rgb=pos_rgb, pos_thermal=pos_thermal)
+                x = m(x, coarse_context=coarse_context, pos_rgb=None, pos_thermal=None)
                 
                 # CRITICAL FIX: Convert tuple output to single tensor
                 if isinstance(x, tuple) and len(x) == 3:
