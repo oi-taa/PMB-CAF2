@@ -410,7 +410,12 @@ class Model(nn.Module):
                     pass
             elif isinstance(m, Progressive_SimpleAdd):
                 # Same logic as BCAM_Progressive
-                scale = self.get_module_scale(...)
+                if isinstance(x, (tuple, list)):
+                    input_channels = x[0].shape[1]
+                else:
+                    input_channels = x.shape[1]
+
+                scale = self.get_module_scale(input_channels) 
                 coarse_context = fused_contexts.get('P5')
                 x = m(x, coarse_context=coarse_context, pos_rgb=None, pos_thermal=None)
                 
