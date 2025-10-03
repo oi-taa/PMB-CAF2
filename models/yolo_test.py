@@ -295,6 +295,16 @@ class Model(nn.Module):
         fused_contexts = {}  # Store fused outputs for progressive chain
         
         i = 0
+        debug = self.training and hasattr(self, '_batch_count')
+        if not hasattr(self, '_batch_count'):
+            self._batch_count = 0
+        
+        debug = debug and self._batch_count < 3
+        
+        if debug:
+            print(f"\n{'='*80}")
+            print(f"DEBUG: Batch {self._batch_count}")
+            print(f"{'='*80}")
         # Before the BCAM_Progressive section, add:
         
         for m in self.model:
@@ -357,10 +367,43 @@ class Model(nn.Module):
                     x = x[0] + x[1]
                 else:
                     fused_contexts[scale] = x
-            elif isinstance(m, BCAM):
+            elif isinstance(m, BCAM_SingleOutput):
+                if debug:
+                    print(f"\nLayer {i}: BCAM_SingleOutput")
+                    if isinstance(x, (tuple, list)):
+                        print(f"  Input: tuple/list of {len(x)} tensors")
+                        print(f"    RGB shape: {x[0].shape}")
+                        print(f"    Thermal shape: {x[1].shape}")
+                    else:
+                        print(f"  Input: single tensor {x.shape}")
+                
                 x = m(x)
+                
+                if debug:
+                    if isinstance(x, tuple):
+                        print(f"  ERROR: Output is tuple with {len(x)} elements!")
+                        for idx, t in enumerate(x):
+                            print(f"    [{idx}] shape: {t.shape}")
+                    else:
+                        print(f"  Output: single tensor {x.shape}")
+                        print(f"  Output stats: min={x.min():.3f}, max={x.max():.3f}, mean={x.mean():.3f}")
+            
+            # Standard BCAM handling (if you still have any)
+            elif isinstance(m, BCAM):
+                if debug:
+                    print(f"\nLayer {i}: BCAM (3-tuple output)")
+                
+                x = m(x)
+                
                 if isinstance(x, tuple) and len(x) == 3:
-                    x = torch.cat(x, dim=1)  # Concatenate all 3 (3072 channels)
+                    if debug:
+                        print(f"  Output: 3-tuple (concatenating)")
+                        print(f"    RGB: {x[0].shape}")
+                        print(f"    Thermal: {x[1].shape}")
+                        print(f"    Fused: {x[2].shape}")
+                    x = torch.cat(x, dim=1)
+                    if debug:
+                        print(f"  After concat: {x.shape}")
             
            
             elif isinstance(m, UCAM):
@@ -401,12 +444,20 @@ class Model(nn.Module):
                     x = m(x2)  # Thermal stream
                 else:
                     x = m(x)   # RGB stream or other
-           
+            if debug and i in [4, 6, 9, 14, 16, 19, 20, 21, 22, 23, 25, 30]:
+                module_type = type(m).__name__
+                if isinstance(x, (list, tuple)):
+                    print(f"Layer {i} ({module_type}): tuple/list output")
+                else:
+                    print(f"Layer {i} ({module_type}): {x.shape}")
+            
             y.append(x if m.i in self.save else None)
             i += 1
-
+        if debug:
+            print(f"{'='*80}\n")
         if profile:
             logger.info('%.1fms total' % sum(dt))
+        self._batch_count += 1
         return x
     
     def _initialize_biases(self, cf=None):  # initialize biases into Detect(), cf is class frequency
@@ -678,21 +729,18 @@ def parse_model(d, ch):  # model_dict, input_channels(3)
             c2 = 3 * d_model          # 3072  (output concat of 3)
             args = [d_model] + args[1:] if len(args) > 1 else [d_model]
         elif m is BCAM_SingleOutput:
-            
-            # Handle both list and integer f values
             if isinstance(f, list):
                 f_idx = f[0]
             else:
                 f_idx = f
             
-            
             if f_idx >= len(ch):
-                print(f"ERROR: f_idx={f_idx} >= len(ch)={len(ch)} for BCAM_SingleOutput")
-                print(f"ERROR: ch = {ch}")
-                raise IndexError(f"Index {f_idx} out of range for ch list of length {len(ch)}")
+                raise IndexError(f"BCAM_SingleOutput: f_idx={f_idx} >= len(ch)={len(ch)}")
             
             c2 = ch[f_idx]
-            m_ = BCAM_SingleOutput(c2, output_mode='fused', *args[1:])
+            
+            # Don't use args at all - d_model comes from ch, mode is fixed
+            m_ = BCAM_SingleOutput(c2, output_mode='fused')
         elif m is UCAM:
             c2 = ch[f[0]]
             m_ = m(c2, *args[1:])

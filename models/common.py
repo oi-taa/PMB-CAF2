@@ -994,14 +994,10 @@ class BCAM_SingleOutput(BCAM):
     def forward(self, x, **kwargs):
         rgb_final, thermal_final, fused_final = super().forward(x, **kwargs)
         
-        if self.output_mode == 'fused':
-            return fused_final
-        elif self.output_mode == 'rgb':
-            return rgb_final
-        elif self.output_mode == 'thermal':
-            return thermal_final
-        else:
-            return (rgb_final, thermal_final, fused_final)  # Original
+        output = {'fused': fused_final, 'rgb': rgb_final, 'thermal': thermal_final}[self.output_mode]
+        
+        assert isinstance(output, torch.Tensor) and not isinstance(output, tuple)
+        return output
         
 class DropPath(nn.Module):
     """Drop paths (Stochastic Depth) per sample"""
