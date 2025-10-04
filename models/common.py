@@ -1221,176 +1221,138 @@ class Adapter1x1(nn.Module):
     def forward(self, x): 
         return self.proj(x)
 
-class Adapter1x1(nn.Module):
-    """Project upsampled coarse features to target channels"""
-    def __init__(self, in_ch, out_ch, use_bn=False):
-        super().__init__()
-        self.in_ch = in_ch
-        self.out_ch = out_ch
-        
-        layers = [nn.Conv2d(in_ch, out_ch, kernel_size=1, bias=False)]
-        if use_bn:
-            # Safe GroupNorm with dynamic num_groups
-            num_groups = min(32, out_ch) if out_ch >= 32 else out_ch
-            # Ensure divisibility
-            while out_ch % num_groups != 0:
-                num_groups -= 1
-            layers += [nn.GroupNorm(num_groups, out_ch), nn.ReLU(inplace=True)]
-        self.proj = nn.Sequential(*layers)
-    
-    def forward(self, x): 
-        return self.proj(x)
-
 
 class FiLMModulation(nn.Module):
     """Produce per-channel scale and shift from coarse context"""
     def __init__(self, in_ch, channels, mid_ch=None):
         super().__init__()
         mid_ch = mid_ch or channels // 2
-        
-        self.pool = nn.AdaptiveAvgPool2d(1)
-        
+        # conv outputs 2*C (scale, shift)
         self.net = nn.Sequential(
             nn.Conv2d(in_ch, mid_ch, 1, bias=True),
             nn.ReLU(inplace=True),
             nn.Conv2d(mid_ch, channels * 2, 1, bias=True)
         )
-        
-        # Zero-init BOTH convs for identity at start
-        nn.init.constant_(self.net[0].bias, 0.0)
-        nn.init.normal_(self.net[0].weight, 0.0, 0.01)
+        # initialize small so initial effect is near identity
         nn.init.constant_(self.net[-1].bias, 0.0)
         nn.init.normal_(self.net[-1].weight, 0.0, 0.01)
     
     def forward(self, coarse):
-        pooled = self.pool(coarse)
-        params = self.net(pooled)
-        scale, shift = params.chunk(2, dim=1)
+        """
+        coarse: (B, Cc, H, W) - upsampled & adapter-projected coarse map
+        returns: scale, shift each (B, C, H, W)
+        """
+        params = self.net(coarse)                # (B, 2C, H, W)
+        scale, shift = params.chunk(2, dim=1)    # (B, C, H, W) each
         return scale, shift
 
 
 class BCAM_Progressive(BCAM):
-    """Progressive BCAM with channel-wise FiLM and gated residuals"""
+    """
+    Progressive BCAM with FiLM modulation from coarse context
+    
+    **Return Values**: Always returns 3-tuple `(rgb_final, thermal_final, fused_final)`
+    Inherits 3-tuple output from parent BCAM for consistency
+    """
     def __init__(self, d_model, num_heads=4, dropout=0.1, 
                  vert_anchors=8, horz_anchors=8, coarse_channels=None):
         super().__init__(d_model, num_heads, dropout, vert_anchors, horz_anchors)
-        
         if coarse_channels:
-            self.adapter = Adapter1x1(coarse_channels, d_model, use_bn=False)
+            self.adapter = Adapter1x1(coarse_channels, d_model)
             self.rgb_film = FiLMModulation(d_model, d_model)
             self.thermal_film = FiLMModulation(d_model, d_model)
-            # Single gated residual (not per-stream - simpler)
-            self.g_ctx = nn.Parameter(torch.zeros(1))
         else:
             self.adapter = None
-    
+
     def forward(self, x, coarse_context=None, pos_rgb=None, pos_thermal=None, return_attn=False):
+        """
+        Progressive forward with comprehensive validation.
+        
+        **Return Values**: Always returns 3-tuple `(rgb_final, thermal_final, fused_final)`
+        When return_attn=True: returns ((rgb, thermal, fused), attn_info)
+        """
         rgb_fea, thermal_fea = x[0], x[1]
         
-        dev = next(self.parameters()).device
-        dt = rgb_fea.dtype
-        
-        if rgb_fea.shape[1] != self.d_model or thermal_fea.shape[1] != self.d_model:
-            raise RuntimeError(f"Input channels must equal d_model ({self.d_model})")
+
+        # Interface checks
+        assert rgb_fea.shape[1] == self.d_model and thermal_fea.shape[1] == self.d_model, \
+            f"Input channels must equal d_model ({self.d_model})"
         if coarse_context is None:
             raise RuntimeError("BCAM_Progressive requires coarse_context")
         if self.adapter is None:
             raise RuntimeError("BCAM_Progressive not configured with adapter")
+
+        # Check channels & device of coarse_context match adapter input
+        expected_in_ch = self.adapter.proj[0].in_channels
+        actual_in_ch = coarse_context.shape[1]
+        assert actual_in_ch == expected_in_ch, \
+            f"Adapter expects {expected_in_ch} coarse channels, got {actual_in_ch}"
         
-        # Coerce types
-        coarse_context = coarse_context.to(dev, dt)
-        rgb_fea = rgb_fea.to(dev, dt)
-        thermal_fea = thermal_fea.to(dev, dt)
-        
-        if coarse_context.shape[1] != self.adapter.in_ch:
-            raise RuntimeError(
-                f"Adapter expects {self.adapter.in_ch} coarse channels, "
-                f"got {coarse_context.shape[1]}"
-            )
-        
-        # Upsample
+        # Device compatibility check
+        adapter_dev = next(self.adapter.parameters()).device
+        assert coarse_context.device == adapter_dev, \
+            f"coarse_context device {coarse_context.device} != adapter device {adapter_dev}"
+
+        # Upsample coarse to fine resolution if needed
         if coarse_context.shape[-2:] != rgb_fea.shape[-2:]:
-            coarse_up = F.interpolate(coarse_context, size=rgb_fea.shape[-2:],
+            coarse_up = F.interpolate(coarse_context, size=rgb_fea.shape[-2:], 
                                     mode='bilinear', align_corners=False)
         else:
             coarse_up = coarse_context
-        
-        # Project context
-        ctx_proj = self.adapter(coarse_up).to(dt)
-        
-        # Gated residual injection
-        gamma = torch.sigmoid(self.g_ctx)
-        rgb_fea = rgb_fea + gamma * ctx_proj
-        thermal_fea = thermal_fea + gamma * ctx_proj
-        
-        # Channel-wise FiLM
-        rgb_scale, rgb_shift = self.rgb_film(ctx_proj)
-        thermal_scale, thermal_shift = self.thermal_film(ctx_proj)
-        
-        # Bound scales
-        rgb_scale = torch.tanh(rgb_scale)
-        thermal_scale = torch.tanh(thermal_scale)
-        
-        # Apply FiLM
-        rgb_fea = (1 + rgb_scale) * rgb_fea + rgb_shift
-        thermal_fea = (1 + thermal_scale) * thermal_fea + thermal_shift
-        
-        # Call parent
+
+        # Project coarse context (NO positional encoding added here - BCAM handles all pos)
+        coarse_proj = self.adapter(coarse_up)
+
+        # Generate FiLM parameters
+        rgb_scale, rgb_shift = self.rgb_film(coarse_proj)
+        thermal_scale, thermal_shift = self.thermal_film(coarse_proj)
+
+        # Apply FiLM modulation: y = (1 + scale) * x + shift
+        rgb_fea = rgb_fea * (1 + rgb_scale) + rgb_shift
+        thermal_fea = thermal_fea * (1 + thermal_scale) + thermal_shift
+
+        # Call parent with FiLM-modulated features, propagate return_attn
         parent_out = super().forward((rgb_fea, thermal_fea), 
                                     pos_rgb=pos_rgb, pos_thermal=pos_thermal, 
                                     return_attn=return_attn)
-        
+
         if return_attn:
+            # Parent returns ((rgb, thermal, fused), attn_info)
             (rgb_out, thermal_out, fused_out), attn_info = parent_out
             return (rgb_out, thermal_out, fused_out), attn_info
         else:
+            # Parent returns (rgb, thermal, fused)
             rgb_out, thermal_out, fused_out = parent_out
             return rgb_out, thermal_out, fused_out
-
 class Progressive_SimpleAdd(nn.Module):
     """
     Progressive context injection with simple addition (no FiLM)
-    For ablation testing against FiLM approach
+    Just adds projected context to features before BCAM attention
+    
+    Returns 3-tuple like BCAM for consistency
     """
     def __init__(self, d_model, num_heads=4, dropout=0.1, 
                  vert_anchors=8, horz_anchors=8, coarse_channels=None):
         super().__init__()
         self.d_model = d_model
         
-        # Project coarse context
+        # Project coarse context to match d_model
         if coarse_channels:
-            self.adapter = Adapter1x1(coarse_channels, d_model, use_bn=False)
-            # Learnable scalar gate (same as BCAM_Progressive)
-            self.g_ctx = nn.Parameter(torch.zeros(1))
+            self.adapter = Adapter1x1(coarse_channels, d_model)
+            self.alpha = nn.Parameter(torch.tensor(0.1))  # Learnable mixing weight
         else:
             self.adapter = None
         
-        # Standard BCAM for attention
+        # Standard BCAM components
         self.bcam = BCAM(d_model, num_heads, dropout, vert_anchors, horz_anchors)
     
     def forward(self, x, coarse_context=None, pos_rgb=None, pos_thermal=None, return_attn=False):
         rgb_fea, thermal_fea = x[0], x[1]
         
-        # Device/dtype coercion
-        dev = next(self.parameters()).device
-        dt = rgb_fea.dtype
-        
         if coarse_context is None:
             raise RuntimeError("Progressive_SimpleAdd requires coarse_context")
         if self.adapter is None:
             raise RuntimeError("Progressive_SimpleAdd not configured with adapter")
-        
-        # Coerce types
-        coarse_context = coarse_context.to(dev, dt)
-        rgb_fea = rgb_fea.to(dev, dt)
-        thermal_fea = thermal_fea.to(dev, dt)
-        
-        # Check channels
-        if coarse_context.shape[1] != self.adapter.in_ch:
-            raise RuntimeError(
-                f"Adapter expects {self.adapter.in_ch} coarse channels, "
-                f"got {coarse_context.shape[1]}"
-            )
         
         # Upsample coarse to fine resolution
         if coarse_context.shape[-2:] != rgb_fea.shape[-2:]:
@@ -1400,20 +1362,20 @@ class Progressive_SimpleAdd(nn.Module):
             coarse_up = coarse_context
         
         # Project context
-        ctx_proj = self.adapter(coarse_up).to(dt)
+        coarse_proj = self.adapter(coarse_up)
         
-        # Simple gated addition (no FiLM modulation)
-        gamma = torch.sigmoid(self.g_ctx)
-        rgb_fea = rgb_fea + gamma * ctx_proj
-        thermal_fea = thermal_fea + gamma * ctx_proj
+        # Simple addition (no FiLM modulation)
+        rgb_fea = rgb_fea + self.alpha * coarse_proj
+        thermal_fea = thermal_fea + self.alpha * coarse_proj
         
         # Standard BCAM attention on context-enriched features
         return self.bcam((rgb_fea, thermal_fea), pos_rgb, pos_thermal, return_attn)
 
+
 class Progressive_Projection(nn.Module):
     """
     Progressive context injection WITHOUT attention - for P3 scale
-    Applies gated residual + FiLM modulation + projection, skips cross-attention
+    Only applies FiLM modulation + projection, skips cross-attention
     
     Returns single fused tensor (not 3-tuple like BCAM)
     """
@@ -1422,14 +1384,11 @@ class Progressive_Projection(nn.Module):
         self.d_model = d_model
         
         # Adapter to project coarse context
-        self.adapter = Adapter1x1(coarse_channels, d_model, use_bn=False)
+        self.adapter = Adapter1x1(coarse_channels, d_model)
         
-        # FiLM for each modality (channel-wise)
+        # FiLM for each modality
         self.rgb_film = FiLMModulation(d_model, d_model)
         self.thermal_film = FiLMModulation(d_model, d_model)
-        
-        # Gated residual (same as BCAM_Progressive)
-        self.g_ctx = nn.Parameter(torch.zeros(1))
         
         # Simple fusion projection (no attention)
         self.fusion_proj = nn.Conv2d(d_model * 2, d_model, kernel_size=1, bias=False)
@@ -1444,55 +1403,31 @@ class Progressive_Projection(nn.Module):
         """
         rgb_fea, thermal_fea = x[0], x[1]
         
-        # Device/dtype coercion
-        dev = next(self.parameters()).device
-        dt = rgb_fea.dtype
-        
-        if rgb_fea.shape[1] != self.d_model or thermal_fea.shape[1] != self.d_model:
-            raise RuntimeError(f"Input channels must equal d_model ({self.d_model})")
+        # Validation
+        assert rgb_fea.shape[1] == self.d_model
+        assert thermal_fea.shape[1] == self.d_model
         if coarse_context is None:
             raise RuntimeError("Progressive_Projection requires coarse_context")
         
-        # Coerce types
-        coarse_context = coarse_context.to(dev, dt)
-        rgb_fea = rgb_fea.to(dev, dt)
-        thermal_fea = thermal_fea.to(dev, dt)
-        
-        # Check channels
-        if coarse_context.shape[1] != self.adapter.in_ch:
-            raise RuntimeError(
-                f"Adapter expects {self.adapter.in_ch} coarse channels, "
-                f"got {coarse_context.shape[1]}"
-            )
-        
-        # Upsample coarse to fine resolution
+        # Upsample coarse to fine resolution if needed
         if coarse_context.shape[-2:] != rgb_fea.shape[-2:]:
             coarse_up = F.interpolate(coarse_context, size=rgb_fea.shape[-2:],
                                     mode='bilinear', align_corners=False)
         else:
             coarse_up = coarse_context
         
-        # Project context
-        ctx_proj = self.adapter(coarse_up).to(dt)
+        # Project coarse context
+        coarse_proj = self.adapter(coarse_up)
         
-        # Gated residual injection (same as BCAM_Progressive)
-        gamma = torch.sigmoid(self.g_ctx)
-        rgb_fea = rgb_fea + gamma * ctx_proj
-        thermal_fea = thermal_fea + gamma * ctx_proj
+        # Generate FiLM parameters
+        rgb_scale, rgb_shift = self.rgb_film(coarse_proj)
+        thermal_scale, thermal_shift = self.thermal_film(coarse_proj)
         
-        # Channel-wise FiLM modulation
-        rgb_scale, rgb_shift = self.rgb_film(ctx_proj)
-        thermal_scale, thermal_shift = self.thermal_film(ctx_proj)
+        # Apply FiLM modulation
+        rgb_modulated = rgb_fea * (1 + rgb_scale) + rgb_shift
+        thermal_modulated = thermal_fea * (1 + thermal_scale) + thermal_shift
         
-        # Bound scales for stability
-        rgb_scale = torch.tanh(rgb_scale)
-        thermal_scale = torch.tanh(thermal_scale)
-        
-        # Apply FiLM
-        rgb_modulated = (1 + rgb_scale) * rgb_fea + rgb_shift
-        thermal_modulated = (1 + thermal_scale) * thermal_fea + thermal_shift
-        
-        # Concatenation + projection (NO attention)
+        # Simple concatenation + projection (NO attention)
         fused_concat = torch.cat([rgb_modulated, thermal_modulated], dim=1)
         fused = self.fusion_proj(fused_concat)
         
