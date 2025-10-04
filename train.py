@@ -889,7 +889,7 @@ def train_rgb_ir(hyp, opt, device, tb_writer=None):
 
         # EMA
         if ema and ckpt.get('ema'):
-            ema.ema.load_state_dict(ckpt['ema'].float().state_dict())
+            ema.ema.load_state_dict(ckpt['ema'].float().state_dict(), strict=False)
             ema.updates = ckpt.get('updates', 0)
 
         # Results
