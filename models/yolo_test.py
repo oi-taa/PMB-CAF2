@@ -237,7 +237,7 @@ class Model(nn.Module):
             y = []  # outputs
             for si, fi in zip(s, f):
                 xi = scale_img(x.flip(fi) if fi else x, si, gs=int(self.stride.max()))
-                yi = self.forward_once(xi)[0]  # forward
+                yi = self.forward_once(xi, xi)[0]  # forward (needs both x1 and x2)
                 # cv2.imwrite(f'img_{si}.jpg', 255 * xi[0].cpu().numpy().transpose((1, 2, 0))[:, :, ::-1])  # save
                 yi[..., :4] /= si  # de-scale
                 if fi == 2:
