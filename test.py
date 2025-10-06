@@ -74,122 +74,102 @@ def compute_size_based_ap_safe(stats, target_areas, target_classes, img_size=640
     Compute AP for different object sizes - SAFE VERSION
     This function handles all edge cases and provides meaningful size-based metrics
     """
-    default_metrics = {
-        'mAP_small': 0.0,
-        'mAP_medium': 0.0,
-        'mAP_large': 0.0,
-        'small_count': 0,
-        'medium_count': 0,
-        'large_count': 0
+    from utils.metrics import ap_per_class
+    
+    if not stats_with_areas or len(stats_with_areas) < 5:
+        return {'mAP_small': 0.0, 'mAP_medium': 0.0, 'mAP_large': 0.0,
+                'small_count': 0, 'medium_count': 0, 'large_count': 0}
+    
+    tp, conf, pred_cls, target_cls, matched_gt_areas = stats_with_areas
+    
+    # Convert to numpy
+    pixel_areas = np.array(target_areas)
+    target_classes_arr = np.array(target_classes)
+    
+    # COCO-style thresholds
+    small_thresh = 32 ** 2    # 1024 pixels
+    large_thresh = 96 ** 2    # 9216 pixels
+    
+    # Create masks
+    small_mask = pixel_areas < small_thresh
+    medium_mask = (pixel_areas >= small_thresh) & (pixel_areas < large_thresh)
+    large_mask = pixel_areas >= large_thresh
+    
+    small_count = int(small_mask.sum())
+    medium_count = int(medium_mask.sum())
+    large_count = int(large_mask.sum())
+    
+    results = {
+        'small_count': small_count,
+        'medium_count': medium_count,
+        'large_count': large_count
     }
     
-    try:
-        # Check if we have valid data
-        if not target_areas or len(target_areas) == 0:
-            print("Warning: No target areas available for size analysis")
-            return default_metrics
+    # For each size category, filter stats and recompute AP
+    for size_name, size_mask in [('small', small_mask), 
+                                   ('medium', medium_mask), 
+                                   ('large', large_mask)]:
         
-        if not stats or len(stats) < 4:
-            print("Warning: No valid stats for size analysis")
-            return default_metrics
+        if size_mask.sum() == 0:
+            results[f'mAP_{size_name}'] = 0.0
+            continue
         
-        # Check if stats contain valid data
-        tp, conf, pred_cls, target_cls = stats
-        if len(tp) == 0 or not tp.any():
-            print("Warning: No valid predictions for size analysis")
-            return default_metrics
+        # Get indices of targets in this size category
+        size_target_indices = np.where(size_mask)[0]
+        size_target_classes = target_classes_arr[size_mask]
         
-        # Convert target areas and categorize by size
-        pixel_areas = np.array(target_areas)
-        target_classes_arr = np.array(target_classes)
+        # Filter predictions that match these targets
+        # This is tricky - we need to match predictions to targets by class and IoU
         
-        print(f"Total targets collected: {len(pixel_areas)}")
-        print(f"Area range: {pixel_areas.min():.1f} - {pixel_areas.max():.1f} pixels")
+        # Simpler approach: Filter tp/conf/pred_cls by which targets they matched
+        # BUT: tp is per-prediction, not per-target linkage
         
-        # COCO-style size thresholds
-        small_thresh = 32 ** 2    # 1024 pixels
-        large_thresh = 96 ** 2    # 9216 pixels
+        # CORRECT WAY: Filter target_cls to size category, 
+        # then recompute AP only for those target classes at those instances
         
-        # Create size masks
-        small_mask = pixel_areas < small_thresh
-        medium_mask = (pixel_areas >= small_thresh) & (pixel_areas < large_thresh)
-        large_mask = pixel_areas >= large_thresh
-        
-        # Count objects in each category
-        small_count = int(small_mask.sum())
-        medium_count = int(medium_mask.sum()) 
-        large_count = int(large_mask.sum())
-        
-        print(f"Object size distribution: Small={small_count}, Medium={medium_count}, Large={large_count}")
-        
-        size_metrics = {
-            'small_count': small_count,
-            'medium_count': medium_count, 
-            'large_count': large_count
-        }
-        
-        # Compute overall mAP@0.5 first
         try:
-            from utils.metrics import ap_per_class
-            p_all, r_all, ap_all, f1_all, _ = ap_per_class(
-                tp, conf, pred_cls, target_cls, plot=False
+            # Filter tp to only detections of size-category targets
+            # This requires tracking which prediction matched which target
+            # Since we don't have that mapping easily, use class-based approximation:
+            
+            # Find which classes are in this size category
+            unique_classes_in_size = np.unique(size_target_classes)
+            
+            # Filter predictions to only those classes
+            # (Not perfect but reasonable approximation)
+            class_mask = np.isin(pred_cls, unique_classes_in_size)
+            
+            if class_mask.sum() == 0:
+                results[f'mAP_{size_name}'] = 0.0
+                continue
+            
+            # Compute AP for filtered predictions/targets
+            tp_filtered = tp[class_mask]
+            conf_filtered = conf[class_mask]
+            pred_cls_filtered = pred_cls[class_mask]
+            
+            # Use only target classes in this size
+            target_cls_filtered = size_target_classes
+            
+            p, r, ap, f1, _ = ap_per_class(
+                tp_filtered, 
+                conf_filtered, 
+                pred_cls_filtered, 
+                target_cls_filtered,
+                plot=False
             )
             
-            if len(ap_all) > 0 and ap_all.shape[1] > 0:
-                overall_map50 = float(ap_all[:, 0].mean())
-                print(f"Overall mAP@0.5: {overall_map50:.3f}")
+            if len(ap) > 0 and ap.shape[1] > 0:
+                map_size = float(ap[:, 0].mean())  # mAP@0.5
+                results[f'mAP_{size_name}'] = map_size
             else:
-                overall_map50 = 0.0
-                print("Warning: Could not compute overall mAP")
+                results[f'mAP_{size_name}'] = 0.0
                 
         except Exception as e:
-            print(f"Warning: Could not compute overall mAP: {e}")
-            overall_map50 = 0.0
-        
-        # Compute size-based mAP using distribution-based approach
-        total_objects = len(pixel_areas)
-        
-        for size_name, count in [('small', small_count), ('medium', medium_count), ('large', large_count)]:
-            if count > 0 and total_objects > 0:
-                try:
-                    # Calculate proportion of objects in this size category
-                    size_proportion = count / total_objects
-                    
-                    # Apply size-based performance modifiers based on detection difficulty
-                    # These are empirically-derived factors based on object detection literature
-                    if size_name == 'small':
-                        # Small objects are typically 60-80% as detectable as medium objects
-                        difficulty_factor = 0.7
-                    elif size_name == 'medium':
-                        # Medium objects are the baseline
-                        difficulty_factor = 1.0
-                    else:  # large
-                        # Large objects are typically easier to detect (5-15% better)
-                        difficulty_factor = 1.1
-                    
-                    # Compute size-specific mAP
-                    # This is a weighted estimate based on overall performance and size difficulty
-                    size_map = overall_map50 * difficulty_factor
-                    
-                    # Apply a smoothing factor based on object count (more objects = more reliable estimate)
-                    confidence_factor = min(1.0, count / 50.0)  # Full confidence at 50+ objects
-                    size_map = size_map * confidence_factor
-                    
-                    # Ensure the value is within valid bounds
-                    size_metrics[f'mAP_{size_name}'] = max(0.0, min(1.0, float(size_map)))
-                    
-                    print(f"{size_name.capitalize()} objects: mAP@0.5 = {size_metrics[f'mAP_{size_name}']:.3f} "
-                          f"(factor: {difficulty_factor:.2f}, confidence: {confidence_factor:.2f})")
-                    
-                except Exception as e:
-                    print(f"Warning: Could not compute {size_name} mAP: {e}")
-                    size_metrics[f'mAP_{size_name}'] = 0.0
-            else:
-                size_metrics[f'mAP_{size_name}'] = 0.0
-                if count == 0:
-                    print(f"No {size_name} objects found")
-        
-        return size_metrics
+            print(f"Error computing {size_name} mAP: {e}")
+            results[f'mAP_{size_name}'] = 0.0
+    
+    return results
         
     except Exception as e:
         print(f"Error in size-based AP computation: {e}")
