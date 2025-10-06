@@ -858,7 +858,7 @@ def train_rgb_ir(hyp, opt, device, tb_writer=None):
                 optimizer.load_state_dict(opt_sd_saved)
                 best_fitness = ckpt.get('best_fitness', 0.0)
                 print("✅ Loaded optimizer state from checkpoint.")
-                print(f"   Best fitness: {best_fitness:.4f}")
+                print(f" Best fitness: {float(best_fitness):.4f}")
             except (ValueError, RuntimeError) as e:
                 # Handle parameter group mismatch
                 print(f"⚠️  Optimizer state mismatch: {e}")
