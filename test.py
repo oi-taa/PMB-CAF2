@@ -69,110 +69,110 @@ def compute_efficiency_metrics(model, device, input_shape=(640, 640)):
         'inference_time_ms': avg_time * 1000
     }
 
-def compute_size_based_ap_safe(stats, target_areas, target_classes, img_size=640):
-    """
-    Compute AP for different object sizes - SAFE VERSION
-    This function handles all edge cases and provides meaningful size-based metrics
-    """
+def compute_size_based_ap_safe(stats_with_areas):
+    import numpy as np
     from utils.metrics import ap_per_class
     
-    if not stats_with_areas or len(stats_with_areas) < 5:
-        return {'mAP_small': 0.0, 'mAP_medium': 0.0, 'mAP_large': 0.0,
-                'small_count': 0, 'medium_count': 0, 'large_count': 0}
-    
-    tp, conf, pred_cls, target_cls, matched_gt_areas = stats_with_areas
-    
-    # Convert to numpy
-    pixel_areas = np.array(target_areas)
-    target_classes_arr = np.array(target_classes)
-    
-    # COCO-style thresholds
-    small_thresh = 32 ** 2    # 1024 pixels
-    large_thresh = 96 ** 2    # 9216 pixels
-    
-    # Create masks
-    small_mask = pixel_areas < small_thresh
-    medium_mask = (pixel_areas >= small_thresh) & (pixel_areas < large_thresh)
-    large_mask = pixel_areas >= large_thresh
-    
-    small_count = int(small_mask.sum())
-    medium_count = int(medium_mask.sum())
-    large_count = int(large_mask.sum())
-    
-    results = {
-        'small_count': small_count,
-        'medium_count': medium_count,
-        'large_count': large_count
+    default_metrics = {
+        'mAP_small': 0.0,
+        'mAP_medium': 0.0,
+        'mAP_large': 0.0,
+        'small_count': 0,
+        'medium_count': 0,
+        'large_count': 0
     }
     
-    # For each size category, filter stats and recompute AP
-    for size_name, size_mask in [('small', small_mask), 
-                                   ('medium', medium_mask), 
-                                   ('large', large_mask)]:
+    # Validate input
+    if not stats_with_areas or len(stats_with_areas) < 5:
+        print("⚠️  Size-based AP: No stats available")
+        return default_metrics
+    
+    try:
+        tp, conf, pred_cls, target_cls, matched_gt_areas = stats_with_areas
         
-        if size_mask.sum() == 0:
-            results[f'mAP_{size_name}'] = 0.0
-            continue
+        # Convert to numpy
+        if hasattr(tp, 'cpu'):
+            tp = tp.cpu().numpy()
+        if hasattr(conf, 'cpu'):
+            conf = conf.cpu().numpy()
+        if hasattr(pred_cls, 'cpu'):
+            pred_cls = pred_cls.cpu().numpy()
+        if hasattr(matched_gt_areas, 'cpu'):
+            matched_gt_areas = matched_gt_areas.cpu().numpy()
         
-        # Get indices of targets in this size category
-        size_target_indices = np.where(size_mask)[0]
-        size_target_classes = target_classes_arr[size_mask]
+        # COCO-style size thresholds
+        small_thresh = 32 ** 2    # 1024 pixels
+        large_thresh = 96 ** 2    # 9216 pixels
         
-        # Filter predictions that match these targets
-        # This is tricky - we need to match predictions to targets by class and IoU
+        # Filter to only true positives (predictions that matched a GT)
+        tp_mask = tp[:, 0] > 0  # At least IoU@0.5 threshold passed
         
-        # Simpler approach: Filter tp/conf/pred_cls by which targets they matched
-        # BUT: tp is per-prediction, not per-target linkage
+        # Create size masks based on matched GT areas
+        small_mask = (matched_gt_areas < small_thresh) & tp_mask
+        medium_mask = (matched_gt_areas >= small_thresh) & (matched_gt_areas < large_thresh) & tp_mask
+        large_mask = (matched_gt_areas >= large_thresh) & tp_mask
         
-        # CORRECT WAY: Filter target_cls to size category, 
-        # then recompute AP only for those target classes at those instances
+        # Count detections in each category
+        small_count = int(small_mask.sum())
+        medium_count = int(medium_mask.sum())
+        large_count = int(large_mask.sum())
         
-        try:
-            # Filter tp to only detections of size-category targets
-            # This requires tracking which prediction matched which target
-            # Since we don't have that mapping easily, use class-based approximation:
+        print(f"\n📏 Size-based Detection Counts:")
+        print(f"   Small:  {small_count} detections")
+        print(f"   Medium: {medium_count} detections")
+        print(f"   Large:  {large_count} detections")
+        
+        results = {
+            'small_count': small_count,
+            'medium_count': medium_count,
+            'large_count': large_count
+        }
+        
+        # Compute AP for each size category
+        for size_name, size_mask in [('small', small_mask), 
+                                       ('medium', medium_mask), 
+                                       ('large', large_mask)]:
             
-            # Find which classes are in this size category
-            unique_classes_in_size = np.unique(size_target_classes)
-            
-            # Filter predictions to only those classes
-            # (Not perfect but reasonable approximation)
-            class_mask = np.isin(pred_cls, unique_classes_in_size)
-            
-            if class_mask.sum() == 0:
+            if size_mask.sum() == 0:
                 results[f'mAP_{size_name}'] = 0.0
+                print(f"   {size_name.capitalize()}: No detections (mAP=0.000)")
                 continue
             
-            # Compute AP for filtered predictions/targets
-            tp_filtered = tp[class_mask]
-            conf_filtered = conf[class_mask]
-            pred_cls_filtered = pred_cls[class_mask]
-            
-            # Use only target classes in this size
-            target_cls_filtered = size_target_classes
-            
-            p, r, ap, f1, _ = ap_per_class(
-                tp_filtered, 
-                conf_filtered, 
-                pred_cls_filtered, 
-                target_cls_filtered,
-                plot=False
-            )
-            
-            if len(ap) > 0 and ap.shape[1] > 0:
-                map_size = float(ap[:, 0].mean())  # mAP@0.5
-                results[f'mAP_{size_name}'] = map_size
-            else:
-                results[f'mAP_{size_name}'] = 0.0
+            try:
+                # Filter predictions to this size category
+                tp_size = tp[size_mask]
+                conf_size = conf[size_mask]
+                pred_cls_size = pred_cls[size_mask]
                 
-        except Exception as e:
-            print(f"Error computing {size_name} mAP: {e}")
-            results[f'mAP_{size_name}'] = 0.0
-    
-    return results
+                # Use all target classes for AP computation
+                # (ap_per_class needs to know about all classes, not just detected ones)
+                target_cls_size = target_cls
+                
+                # Compute AP
+                p, r, ap, f1, _ = ap_per_class(
+                    tp_size, 
+                    conf_size, 
+                    pred_cls_size, 
+                    target_cls_size,
+                    plot=False
+                )
+                
+                if len(ap) > 0 and ap.shape[1] > 0:
+                    map_size = float(ap[:, 0].mean())  # mAP@0.5
+                    results[f'mAP_{size_name}'] = map_size
+                    print(f"   {size_name.capitalize()}: mAP@0.5 = {map_size:.3f}")
+                else:
+                    results[f'mAP_{size_name}'] = 0.0
+                    print(f"   {size_name.capitalize()}: No valid AP (mAP=0.000)")
+                    
+            except Exception as e:
+                print(f"⚠️  Error computing {size_name} mAP: {e}")
+                results[f'mAP_{size_name}'] = 0.0
+        
+        return results
         
     except Exception as e:
-        print(f"Error in size-based AP computation: {e}")
+        print(f"❌ Error in size-based AP computation: {e}")
         import traceback
         traceback.print_exc()
         return default_metrics

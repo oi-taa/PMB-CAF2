@@ -844,71 +844,95 @@ def train_rgb_ir(hyp, opt, device, tb_writer=None):
     # Replace the problematic section in train_rgb_ir function around line 671
 
     # Resume
-    # Resume - SAFE / CORRECTED VERSION
     start_epoch, best_fitness = 0, 0.0
     best_score, wait = -float('inf'), 0
     best_weights = None
     warmup_epochs = 5
+
     if pretrained:
-        # Optimizer (safe load)
+        # Optimizer (safe load with better error handling)
         opt_sd_saved = ckpt.get('optimizer', None)
         if opt_sd_saved is not None:
             try:
                 optimizer.load_state_dict(opt_sd_saved)
                 best_fitness = ckpt.get('best_fitness', 0.0)
-                print("Loaded optimizer state from checkpoint.")
-            except ValueError as e:
-                # Typical cause: different number of parameter groups (model/param-grouping changed)
-                print("Optimizer state mismatch:", e)
-                print("Adapting saved optimizer state to current optimizer (dropping per-parameter buffers)...")
-
-                # Build adapted state dict using current param_groups but clear per-parameter state
+                print("✅ Loaded optimizer state from checkpoint.")
+                print(f"   Best fitness: {best_fitness:.4f}")
+            except (ValueError, RuntimeError) as e:
+                # Handle parameter group mismatch
+                print(f"⚠️  Optimizer state mismatch: {e}")
+                print("   Adapting saved optimizer state...")
+                
+                # Build adapted state dict using current param_groups
                 cur_sd = optimizer.state_dict()
                 new_opt_sd = {'state': {}, 'param_groups': cur_sd['param_groups']}
-
-                # If saved groups match current count 1:1, try to copy simple hyperparams
+                
+                # Try to copy hyperparameters if group counts match
                 saved_groups = opt_sd_saved.get('param_groups', [])
                 if len(saved_groups) == len(new_opt_sd['param_groups']):
                     for i, g in enumerate(new_opt_sd['param_groups']):
                         for k in ('lr', 'weight_decay', 'eps', 'betas', 'momentum'):
                             if k in saved_groups[i]:
                                 g[k] = saved_groups[i][k]
-                    print("Copied simple hyperparameters (lr/weight_decay/...) from saved optimizer groups (1:1).")
+                    print("   ✅ Copied hyperparameters from saved optimizer")
                 else:
-                    print("Saved/current param_group counts differ — keeping current hyperparameters.")
-
-                # Attempt to load adapted dict; on failure continue with fresh optimizer
+                    print(f"   ⚠️  Group count mismatch: saved={len(saved_groups)}, current={len(new_opt_sd['param_groups'])}")
+                    print("   Using current hyperparameters")
+                
+                # Attempt to load adapted dict
                 try:
                     optimizer.load_state_dict(new_opt_sd)
                     best_fitness = ckpt.get('best_fitness', 0.0)
-                    print("Loaded adapted optimizer state (per-parameter state cleared).")
+                    print("   ✅ Loaded adapted optimizer state (per-parameter state cleared)")
                 except Exception as ex2:
-                    print("Could not load adapted optimizer state; proceeding with fresh optimizer. Error:", ex2)
+                    print(f"   ❌ Could not load adapted optimizer: {ex2}")
+                    print("   Proceeding with fresh optimizer")
         else:
-            print("No optimizer state found in checkpoint; starting with a fresh optimizer.")
+            print("⚠️  No optimizer state in checkpoint - starting fresh optimizer")
 
         # EMA
         if ema and ckpt.get('ema'):
-            ema.ema.load_state_dict(ckpt['ema'].float().state_dict(), strict=False)
-            ema.updates = ckpt.get('updates', 0)
+            try:
+                ema.ema.load_state_dict(ckpt['ema'].float().state_dict(), strict=False)
+                ema.updates = ckpt.get('updates', 0)
+                print(f"✅ Loaded EMA state (updates={ema.updates})")
+            except Exception as e:
+                print(f"⚠️  Could not load EMA: {e}")
 
-        # Results
+        # Training Results
         if ckpt.get('training_results') is not None:
-            results_file.write_text(ckpt['training_results'])
+            try:
+                results_file.write_text(ckpt['training_results'])
+                print("✅ Loaded training history")
+            except Exception as e:
+                print(f"⚠️  Could not load training history: {e}")
 
-        # Epochs - FIXED LOGIC
+        # Scheduler state (IMPORTANT - was missing!)
+        if ckpt.get('scheduler') is not None and not opt.resume:
+            try:
+                scheduler.load_state_dict(ckpt['scheduler'])
+                print("✅ Loaded scheduler state")
+            except Exception as e:
+                print(f"⚠️  Could not load scheduler: {e}")
+
+        # Epochs - Determine start epoch
         start_epoch = ckpt.get('epoch', -1) + 1
-
+        
         if opt.resume:
-            logger.info(f'Resuming training from epoch {start_epoch} to {epochs}')
-            assert start_epoch < epochs, f'Cannot resume: checkpoint at epoch {start_epoch-1} >= target epochs {epochs}'
+            # RESUME MODE: Continue from checkpoint
+            assert start_epoch < epochs, \
+                f'Cannot resume: checkpoint at epoch {start_epoch-1} >= target epochs {epochs}'
+            logger.info(f'✅ RESUMING training from epoch {start_epoch} → {epochs}')
+            logger.info(f'   Loaded: model weights, optimizer, EMA, scheduler')
         else:
-            # Fine-tuning: reset start_epoch but keep model weights
-            start_epoch = 0
-            logger.info(f'Fine-tuning from pretrained weights, training for {epochs} epochs')
+            # FINE-TUNE MODE: Use weights but restart training
+            logger.info(f'✅ FINE-TUNING from pretrained weights for {epochs} epochs')
+            logger.info(f'   Loaded: model weights only (fresh optimizer/scheduler)')
+            start_epoch = 0  # Reset epoch counter
 
         del ckpt, state_dict
 
+    
 
     # Image sizes
     gs = max(int(model.stride.max()), 32)  # grid size (max stride)
@@ -1359,28 +1383,43 @@ def train_rgb_ir(hyp, opt, device, tb_writer=None):
                             model.load_state_dict(best_weights)
                     break
 
-            # Save model
-            if (not opt.nosave) or (final_epoch and not opt.evolve):  # if save
-                ckpt = {'epoch': epoch,
-                        'best_fitness': best_fitness,
-                        'training_results': results_file.read_text(),
-                        'model': deepcopy(model.module if is_parallel(model) else model).half(),
-                        'ema': deepcopy(ema.ema).half(),
-                        'updates': ema.updates,
-                        'optimizer': optimizer.state_dict(),
-                        'wandb_id': wandb_logger.wandb_run.id if wandb_logger.wandb else None}
+            if (not opt.nosave) or (final_epoch and not opt.evolve):
+                ckpt = {
+                    'epoch': epoch,
+                    'best_fitness': best_fitness,
+                    'training_results': results_file.read_text(),
+                    'model': deepcopy(model.module if is_parallel(model) else model).half(),
+                    'ema': deepcopy(ema.ema).half(),
+                    'updates': ema.updates,
+                    'optimizer': optimizer.state_dict(),  # ✅ ALWAYS save optimizer
+                    'scheduler': scheduler.state_dict(),   # ✅ ADD scheduler state
+                    'wandb_id': wandb_logger.wandb_run.id if wandb_logger.wandb else None
+                }
 
-                # Save last, best and delete
+                # Save last.pt (keep optimizer for resume)
                 torch.save(ckpt, last)
+                print(f"💾 Saved checkpoint: {last.name} (epoch {epoch})")
+                
+                # Save best.pt when fitness improves
                 if best_fitness == fi:
                     torch.save(ckpt, best)
+                    print(f"🏆 Saved new BEST model: {best.name} (fitness={fi:.4f})")
+                
+                # Periodic checkpoints every 10 epochs (optional but recommended)
+                if (epoch + 1) % 10 == 0 and not final_epoch:
+                    periodic = wdir / f'epoch{epoch}.pt'
+                    torch.save(ckpt, periodic)
+                    print(f"💾 Saved periodic checkpoint: {periodic.name}")
+                
                 if wandb_logger.wandb:
                     if ((epoch + 1) % opt.save_period == 0 and not final_epoch) and opt.save_period != -1:
                         wandb_logger.log_model(
                             last.parent, opt, epoch, fi, best_model=best_fitness == fi)
+                
                 del ckpt
 
         # end epoch ----------------------------------------------------------------------------------------------------
+    # end training
     # end training
     if rank in [-1, 0]:
         # Plots
@@ -1390,8 +1429,10 @@ def train_rgb_ir(hyp, opt, device, tb_writer=None):
                 files = ['results.png', 'confusion_matrix.png', *[f'{x}_curve.png' for x in ('F1', 'PR', 'P', 'R')]]
                 wandb_logger.log({"Results": [wandb_logger.wandb.Image(str(save_dir / f), caption=f) for f in files
                                               if (save_dir / f).exists()]})
+        
         # Test best.pt
         logger.info('%g epochs completed in %.3f hours.\n' % (epoch - start_epoch + 1, (time.time() - t0) / 3600))
+        
         if opt.data.endswith('coco.yaml') and nc == 80:  # if COCO
             for m in (last, best) if best.exists() else (last):  # speed, mAP tests
                 results, _, _ = test.test(opt.data,
@@ -1406,21 +1447,57 @@ def train_rgb_ir(hyp, opt, device, tb_writer=None):
                                           save_json=True,
                                           plots=False,
                                           is_coco=is_coco)
-
-        # Strip optimizers
+        
+        # Strip optimizers - FIXED (only strip best.pt)
         final = best if best.exists() else last  # final model
-        for f in last, best:
-            if f.exists():
-                strip_optimizer(f)  # strip optimizers
+        if best.exists():
+            strip_optimizer(best)  # Only strip best for deployment
+            print(f"✂️  Stripped optimizer from {best.name} (deployment ready)")
+        
+        # Keep last.pt with optimizer for resumption
+        if last.exists():
+            print(f"💾 {last.name} kept with optimizer (resumable)")
+        
         if opt.bucket:
             os.system(f'gsutil cp {final} gs://{opt.bucket}/weights')  # upload
+        
         if wandb_logger.wandb and not opt.evolve:  # Log the stripped model
             wandb_logger.wandb.log_artifact(str(final), type='model',
                                             name='run_' + wandb_logger.wandb_run.id + '_model',
                                             aliases=['last', 'best', 'stripped'])
+        
+        # Print training summary and resume instructions
+        print("\n" + "="*80)
+        print("🎯 TRAINING COMPLETE")
+        print("="*80)
+        print(f"📊 Final Results:")
+        print(f"   Best fitness: {best_fitness:.4f}")
+        print(f"   Final epoch: {epoch}")
+        print(f"   Total time: {(time.time() - t0) / 3600:.2f} hours")
+        
+        print(f"\n💾 Saved Models:")
+        print(f"   Best:  {best}")
+        print(f"   Last:  {last}")
+        
+        # Print resume command if training can be continued
+        if not opt.resume and last.exists():
+            print(f"\n🔄 To RESUME this training, run:")
+            resume_cmd = f"""python train.py \\
+  --weights {last} \\
+  --cfg {opt.cfg} \\
+  --data {opt.data} \\
+  --epochs {epochs + 50} \\
+  --batch-size {opt.batch_size} \\
+  --resume"""
+            print(resume_cmd)
+        
+        print("="*80 + "\n")
+        
         wandb_logger.finish_run()
+    
     else:
         dist.destroy_process_group()
+    
     torch.cuda.empty_cache()
     return results
 
