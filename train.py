@@ -1403,7 +1403,13 @@ def train_rgb_ir(hyp, opt, device, tb_writer=None):
                 # Save best.pt when fitness improves
                 if best_fitness == fi:
                     torch.save(ckpt, best)
-                    print(f"🏆 Saved new BEST model: {best.name} (fitness={fi:.4f})")
+                    import numpy as np
+
+                    try:
+                        fi_scalar = float(np.squeeze(fi))
+                        print(f"🏆 Saved new BEST model: {best.name} (fitness={fi_scalar:.4f})")
+                    except Exception:
+                        print(f"🏆 Saved new BEST model: {best.name} (fitness={fi!r})")
                 
                 # Periodic checkpoints every 10 epochs (optional but recommended)
                 if (epoch + 1) % 10 == 0 and not final_epoch:
