@@ -310,11 +310,7 @@ def test(data,
     p, r, f1, mp, mr, map50, map75, map, t0, t1 = 0., 0., 0., 0., 0., 0., 0., 0, 0., 0.
     loss = torch.zeros(3, device=device)
     jdict, stats, ap, ap_class, wandb_images = [], [], [], [], []
-    
-    # Variables for size analysis
-    all_target_areas = []     # Store all target areas for size analysis
-    all_target_classes = []   # Store target classes for size analysis
-    
+
     for batch_i, (img, targets, paths, shapes) in enumerate(tqdm(dataloader, desc=s)):
         img = img.to(device, non_blocking=True)
         img = img.half() if half else img.float()  # uint8 to fp16/32
@@ -335,15 +331,6 @@ def test(data,
             if compute_loss:
                 loss += compute_loss([x.float() for x in train_out], targets)[1][:3]  # box, obj, cls
 
-            # Collect target areas for size analysis
-            if len(targets) > 0:
-                # targets format: [batch_idx, class, x_center, y_center, width, height] (normalized)
-                target_widths = targets[:, 4] * width   # denormalize width to pixels
-                target_heights = targets[:, 5] * height  # denormalize height to pixels
-                target_areas = target_widths * target_heights  # pixel areas
-                all_target_areas.extend(target_areas.cpu().numpy())
-                all_target_classes.extend(targets[:, 1].cpu().numpy())  # class labels
-
             # Run NMS
             targets[:, 2:] *= torch.Tensor([width, height, width, height]).to(device)  # to pixels
             lb = [targets[targets[:, 0] == i, 1:] for i in range(nb)] if save_hybrid else []  # for autolabelling
@@ -361,7 +348,14 @@ def test(data,
 
             if len(pred) == 0:
                 if nl:
-                    stats.append((torch.zeros(0, niou, dtype=torch.bool), torch.Tensor(), torch.Tensor(), tcls))
+                    # No predictions but targets exist - add empty stats with matched_areas
+                    stats.append((
+                        torch.zeros(0, niou, dtype=torch.bool), 
+                        torch.Tensor(), 
+                        torch.Tensor(), 
+                        tcls,
+                        torch.zeros(0)  # ✅ Empty matched_areas
+                    ))
                 continue
 
             # Predictions
@@ -380,13 +374,13 @@ def test(data,
                         f.write(('%g ' * len(line)).rstrip() % line + '\n')
 
             # W&B logging - Media Panel Plots
-            if len(wandb_images) < log_imgs and wandb_logger.current_epoch > 0:  # Check for test operation
+            if len(wandb_images) < log_imgs and wandb_logger.current_epoch > 0:
                 if wandb_logger.current_epoch % wandb_logger.bbox_interval == 0:
                     box_data = [{"position": {"minX": xyxy[0], "minY": xyxy[1], "maxX": xyxy[2], "maxY": xyxy[3]},
-                                 "class_id": int(cls),
-                                 "box_caption": "%s %.3f" % (names[cls], conf),
-                                 "scores": {"class_score": conf},
-                                 "domain": "pixel"} for *xyxy, conf, cls in pred.tolist()]
+                                "class_id": int(cls),
+                                "box_caption": "%s %.3f" % (names[cls], conf),
+                                "scores": {"class_score": conf},
+                                "domain": "pixel"} for *xyxy, conf, cls in pred.tolist()]
                     boxes = {"predictions": {"box_data": box_data, "class_labels": names}}  # inference-space
                     rgb_img = img[si][:3] if img[si].shape[0] > 3 else img[si]  # Take first 3 channels
                     wandb_images.append(wandb_logger.wandb.Image(rgb_img, boxes=boxes, caption=path.name))
@@ -395,18 +389,25 @@ def test(data,
 
             # Append to pycocotools JSON dictionary
             if save_json:
-                # [{"image_id": 42, "category_id": 18, "bbox": [258.15, 41.29, 348.26, 243.78], "score": 0.236}, ...
                 image_id = int(path.stem) if path.stem.isnumeric() else path.stem
                 box = xyxy2xywh(predn[:, :4])  # xywh
                 box[:, :2] -= box[:, 2:] / 2  # xy center to top-left corner
                 for p, b in zip(pred.tolist(), box.tolist()):
                     jdict.append({'image_id': image_id,
-                                  'category_id': coco91class[int(p[5])] if is_coco else int(p[5]),
-                                  'bbox': [round(x, 3) for x in b],
-                                  'score': round(p[4], 5)})
+                                'category_id': coco91class[int(p[5])] if is_coco else int(p[5]),
+                                'bbox': [round(x, 3) for x in b],
+                                'score': round(p[4], 5)})
 
+            # =====================================================================
+            # ✅ CRITICAL ADDITION: Track matched GT areas for size-based metrics
+            # =====================================================================
+            
+            # Initialize matched areas (0 for all predictions initially)
+            matched_areas = torch.zeros(pred.shape[0], device=device)
+            
             # Assign all predictions as incorrect
             correct = torch.zeros(pred.shape[0], niou, dtype=torch.bool, device=device)
+            
             if nl:
                 detected = []  # target indices
                 tcls_tensor = labels[:, 0]
@@ -414,13 +415,14 @@ def test(data,
                 # target boxes
                 tbox = xywh2xyxy(labels[:, 1:5])
                 scale_coords(img[si].shape[1:], tbox, shapes[si][0], shapes[si][1])  # native-space labels
+                
                 if plots:
                     confusion_matrix.process_batch(predn, torch.cat((labels[:, 0:1], tbox), 1))
 
                 # Per target class
                 for cls in torch.unique(tcls_tensor):
-                    ti = (cls == tcls_tensor).nonzero(as_tuple=False).view(-1)  # prediction indices
-                    pi = (cls == pred[:, 5]).nonzero(as_tuple=False).view(-1)  # target indices
+                    ti = (cls == tcls_tensor).nonzero(as_tuple=False).view(-1)  # target indices
+                    pi = (cls == pred[:, 5]).nonzero(as_tuple=False).view(-1)  # prediction indices
 
                     # Search for detections
                     if pi.shape[0]:
@@ -430,16 +432,30 @@ def test(data,
                         # Append detections
                         detected_set = set()
                         for j in (ious > iouv[0]).nonzero(as_tuple=False):
-                            d = ti[i[j]]  # detected target
+                            d = ti[i[j]]  # detected target index
                             if d.item() not in detected_set:
                                 detected_set.add(d.item())
                                 detected.append(d)
                                 correct[pi[j]] = ious[j] > iouv  # iou_thres is 1xn
+                                
+                                # ✅ STORE MATCHED GT AREA
+                                # Get width and height of matched GT box
+                                matched_gt_box = tbox[d]  # [x1, y1, x2, y2]
+                                matched_width = matched_gt_box[2] - matched_gt_box[0]
+                                matched_height = matched_gt_box[3] - matched_gt_box[1]
+                                matched_areas[pi[j]] = matched_width * matched_height
+                                
                                 if len(detected) == nl:  # all targets already located in image
                                     break
 
-            # Append statistics (correct, conf, pcls, tcls)
-            stats.append((correct.cpu(), pred[:, 4].cpu(), pred[:, 5].cpu(), tcls))
+            # ✅ Append statistics WITH matched areas
+            stats.append((
+                correct.cpu(), 
+                pred[:, 4].cpu(), 
+                pred[:, 5].cpu(), 
+                tcls,
+                matched_areas.cpu()  # ✅ Include matched GT areas
+            ))
 
         # Plot images
         if plots and batch_i < 3:
@@ -448,10 +464,16 @@ def test(data,
             f = save_dir / f'test_batch{batch_i}_pred.jpg'  # predictions
             Thread(target=plot_images, args=(img, output_to_target(out), paths, f, names), daemon=True).start()
 
+    # =====================================================================
+    # ✅ COMPUTE STATISTICS WITH SIZE-BASED METRICS
+    # =====================================================================
+
     # Compute statistics
     stats = [np.concatenate(x, 0) for x in zip(*stats)]  # to numpy
+
     if len(stats) and stats[0].any():
-        p, r, ap, f1, ap_class = ap_per_class(*stats, plot=plots, save_dir=save_dir, names=names)
+        # Standard AP computation (first 4 elements)
+        p, r, ap, f1, ap_class = ap_per_class(*stats[:4], plot=plots, save_dir=save_dir, names=names)
         ap50, ap75, ap = ap[:, 0], ap[:, 5], ap.mean(1)  # AP@0.5, AP@0.75, AP@0.5:0.95
         mp, mr, map50, map75, map = p.mean(), r.mean(), ap50.mean(), ap75.mean(), ap.mean()
         nt = np.bincount(stats[3].astype(np.int64), minlength=nc)  # number of targets per class
@@ -459,8 +481,12 @@ def test(data,
         nt = torch.zeros(1)
         mp, mr, map50, map75, map = 0., 0., 0., 0., 0.
 
-    # Compute size-based metrics
-    size_metrics = compute_size_based_ap_safe(stats, all_target_areas, all_target_classes, imgsz)
+    # ✅ Compute size-based metrics with correct signature
+    print("\n" + "="*80)
+    print("📏 Computing Size-Based Performance Metrics...")
+    print("="*80)
+
+    size_metrics = compute_size_based_ap_safe(stats)  
 
     # Print results
     pf = '%20s' + '%12i' * 2 + '%12.3g' * 5  # print format
