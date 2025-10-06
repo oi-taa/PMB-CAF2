@@ -120,36 +120,36 @@ def compute_size_based_ap_safe(stats_with_areas, all_gt_areas, img_wh=None):
         print(f"   Large GTs:  {large_gt_count}")
 
         def compute_size_ap(gt_mask, size_name):
-            """Compute AP for predictions matched to GTs of this size"""
-            # Target classes for this size only
             tcls_size = target_cls[gt_mask]
             
             if len(tcls_size) == 0:
                 print(f"   {size_name}: No GTs → mAP = 0.0")
                 return 0.0
             
-            # ✅ KEY FIX: Predictions matched to GTs in this size category
-            # matched_gt_idx[i] = index of GT that pred[i] matched, or -1 if no match
+            # Get predictions matched to this size
             has_match = matched_gt_idx >= 0
             matched_to_size = np.zeros(len(matched_gt_idx), dtype=bool)
             matched_to_size[has_match] = gt_mask[matched_gt_idx[has_match]]
             
-            # ✅ Set TP to False for preds NOT matched to this size
-            tp_size = tp.copy()
-            tp_size[~matched_to_size] = False  # All IoU thresholds
+            # ✅ FILTER: Only keep predictions relevant to this size
+            # Include: matched to this size OR high confidence (potential FPs for this size)
+            relevant = matched_to_size | (conf > 0.05)
             
-            # Count actual TPs for this size
-            if tp_size.ndim == 2:
-                tp_count = (tp_size[:, 0]).sum()  # Use IoU=0.5 threshold
-            else:
-                tp_count = tp_size.sum()
-            
-            if tp_count == 0:
-                print(f"   {size_name}: 0 TPs / {len(tcls_size)} GTs → mAP = 0.0")
+            if relevant.sum() == 0:
                 return 0.0
             
-            # Compute AP with size-specific targets
-            p, r, ap, f1, ap_class = ap_per_class(tp_size, conf, pred_cls, tcls_size, plot=False)
+            # Create filtered tp where non-size-matches are False
+            tp_filtered = tp[relevant].copy()
+            tp_filtered[~matched_to_size[relevant]] = False
+            
+            # Pass only relevant predictions
+            p, r, ap, f1, ap_class = ap_per_class(
+                tp_filtered, 
+                conf[relevant], 
+                pred_cls[relevant], 
+                tcls_size, 
+                plot=False
+            )
             
             if ap is None or ap.size == 0:
                 return 0.0
@@ -158,7 +158,8 @@ def compute_size_based_ap_safe(stats_with_areas, all_gt_areas, img_wh=None):
             ap50 = ap[:, 0] if ap.ndim == 2 else ap
             mean_ap = float(np.nanmean(ap50)) if ap50.size > 0 else 0.0
             
-            print(f"   {size_name}: {tp_count} TPs / {len(tcls_size)} GTs → mAP@0.5 = {mean_ap:.3f}")
+            tp_count = (tp_filtered[:, 0] if tp_filtered.ndim == 2 else tp_filtered).sum()
+            print(f"   {size_name}: {int(tp_count)} TPs / {len(tcls_size)} GTs → mAP@0.5 = {mean_ap:.3f}")
             return mean_ap
 
         results = {
@@ -311,6 +312,7 @@ def test(data,
     loss = torch.zeros(3, device=device)
     jdict, stats, ap, ap_class, wandb_images = [], [], [], [], []
     all_gt_areas = [] 
+    gt_offset = 0
 
     for batch_i, (img, targets, paths, shapes) in enumerate(tqdm(dataloader, desc=s)):
         img = img.to(device, non_blocking=True)
@@ -455,10 +457,11 @@ def test(data,
                         mh = (matched_gt_box[3] - matched_gt_box[1]).clamp(min=0.0)
                         matched_gt_idx = torch.full((pred.shape[0],), -1, dtype=torch.long, device=device)  # Add this before loop
                         matched_areas[pred_idx] = (mw * mh)
-                        matched_gt_idx[pred_idx] = tgt_idx 
+                        matched_gt_idx[pred_idx] = gt_offset + tgt_idx 
                         
                         if len(detected) == nl:
                             break
+                gt_offset += nl
 
             # ✅ Append statistics WITH matched areas
             stats.append((
