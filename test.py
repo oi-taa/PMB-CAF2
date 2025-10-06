@@ -440,7 +440,8 @@ def test(data,
                                 
                                 # ✅ STORE MATCHED GT AREA
                                 # Get width and height of matched GT box
-                                matched_gt_box = tbox[d]  # [x1, y1, x2, y2]
+                                d_idx = d.item()  # ✅ Extract integer value
+                                matched_gt_box = tbox[d_idx]  # ✅ Now works
                                 matched_width = matched_gt_box[2] - matched_gt_box[0]
                                 matched_height = matched_gt_box[3] - matched_gt_box[1]
                                 matched_areas[pi[j]] = matched_width * matched_height
