@@ -160,7 +160,7 @@ def plot_images(images, targets, paths=None, fname='images.jpg', names=None, max
         img = img.transpose(1, 2, 0)
         if scale_factor < 1:
             img = cv2.resize(img, (w, h))
-
+        if img.shape[2]==6: img = img[:,:,:3] 
         mosaic[block_y:block_y + h, block_x:block_x + w, :] = img
         if len(targets) > 0:
             image_targets = targets[targets[:, 0] == i]
