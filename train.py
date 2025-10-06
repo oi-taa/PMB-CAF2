@@ -1479,7 +1479,7 @@ def train_rgb_ir(hyp, opt, device, tb_writer=None):
         print("🎯 TRAINING COMPLETE")
         print("="*80)
         print(f"📊 Final Results:")
-        print(f"   Best fitness: {best_fitness:.4f}")
+        print(f" Best fitness: {float(best_fitness):.4f}")
         print(f"   Final epoch: {epoch}")
         print(f"   Total time: {(time.time() - t0) / 3600:.2f} hours")
         
