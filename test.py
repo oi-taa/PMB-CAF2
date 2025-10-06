@@ -500,25 +500,7 @@ def test(data,
     print("="*80)
     # Add this RIGHT BEFORE: size_metrics = compute_size_based_ap_safe(stats, img_wh=imgsz)
 
-    print("\n🔍 DEBUG: Stats Analysis")
-    print(f"Total predictions across all images: {len(stats[4])}")
-    print(f"Predictions with matched_areas > 0: {(stats[4] > 0).sum()}")
-    print(f"Predictions with matched_areas = 0: {(stats[4] == 0).sum()}")
-    print(f"True positives (tp[:, 0] > 0): {(stats[0][:, 0] > 0).sum()}")
-    print(f"False positives: {(stats[0][:, 0] == 0).sum()}")
-    print(f"\nMatched area distribution:")
-    print(f"  Min (non-zero): {stats[4][stats[4] > 0].min():.0f}")
-    print(f"  Max: {stats[4].max():.0f}")
-    print(f"  Mean (non-zero): {stats[4][stats[4] > 0].mean():.0f}")
-
-    # Check correlation
-    has_area = stats[4] > 0
-    is_tp = stats[0][:, 0] > 0
-    print(f"\nCorrelation check:")
-    print(f"  TPs with area > 0: {(is_tp & has_area).sum()}")
-    print(f"  TPs with area = 0: {(is_tp & ~has_area).sum()} ← Should be 0!")
-    print(f"  FPs with area > 0: {(~is_tp & has_area).sum()} ← Should be 0!")
-    print(f"  FPs with area = 0: {(~is_tp & ~has_area).sum()}")
+    
     size_metrics = compute_size_based_ap_safe(stats, all_gt_areas, img_wh=imgsz)
 
     # Print results
