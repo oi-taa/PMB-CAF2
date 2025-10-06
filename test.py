@@ -310,6 +310,7 @@ def test(data,
     p, r, f1, mp, mr, map50, map75, map, t0, t1 = 0., 0., 0., 0., 0., 0., 0., 0, 0., 0.
     loss = torch.zeros(3, device=device)
     jdict, stats, ap, ap_class, wandb_images = [], [], [], [], []
+    all_gt_areas = [] 
 
     for batch_i, (img, targets, paths, shapes) in enumerate(tqdm(dataloader, desc=s)):
         img = img.to(device, non_blocking=True)
@@ -403,6 +404,7 @@ def test(data,
             # =====================================================================
             
             matched_areas = torch.zeros(pred.shape[0], device=device, dtype=torch.float32)
+            matched_gt_idx = torch.full((pred.shape[0],), -1, dtype=torch.long, device=device) 
             correct = torch.zeros(pred.shape[0], niou, dtype=torch.bool, device=device)
 
             if nl:
@@ -412,6 +414,11 @@ def test(data,
                 # target boxes in native (pixel) coords
                 tbox = xywh2xyxy(labels[:, 1:5])
                 scale_coords(img[si].shape[1:], tbox, shapes[si][0], shapes[si][1])  # native-space labels
+                if nl > 0:
+                    gt_widths = (tbox[:, 2] - tbox[:, 0]).clamp(min=0.0)
+                    gt_heights = (tbox[:, 3] - tbox[:, 1]).clamp(min=0.0)
+                    gt_areas_batch = (gt_widths * gt_heights).cpu().numpy()
+                    all_gt_areas.extend(gt_areas_batch)
 
                 if plots:
                     confusion_matrix.process_batch(predn, torch.cat((labels[:, 0:1], tbox), 1))
@@ -512,7 +519,7 @@ def test(data,
     print(f"  TPs with area = 0: {(is_tp & ~has_area).sum()} ← Should be 0!")
     print(f"  FPs with area > 0: {(~is_tp & has_area).sum()} ← Should be 0!")
     print(f"  FPs with area = 0: {(~is_tp & ~has_area).sum()}")
-    size_metrics = compute_size_based_ap_safe(stats, img_wh=imgsz)
+    size_metrics = compute_size_based_ap_safe(stats, all_gt_areas, img_wh=imgsz)
 
     # Print results
     pf = '%20s' + '%12i' * 2 + '%12.3g' * 5  # print format
