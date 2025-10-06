@@ -423,25 +423,24 @@ def test(data,
                     # indices of predictions that exceed the primary IoU threshold (iouv[0])
                     pass_inds = (ious_all > iouv[0]).nonzero(as_tuple=True)[0]  # 1D tensor of indices into ious_all/pi
 
-                    for idx in pass_inds.tolist():  # now idx is a Python int index into ious_all / pi / i
-                        pred_idx = pi[idx].item()    # index of the prediction in this image (Python int)
-                        tgt_idx = ti[i[idx].item()].item()  # index of matched target (Python int)
-
-                        # avoid double-detecting same GT
+                    for idx in pass_inds.tolist():
+                        pred_idx = pi[idx].item()
+                        tgt_idx = ti[i[idx].item()].item()
+                        
+                        # ✅ FIX: Check detected BEFORE assigning anything
                         if tgt_idx in detected:
                             continue
                         detected.add(tgt_idx)
-
-                        # mark correct for all IoU thresholds (broadcast safe)
+                        
+                        # Now assign (only if GT wasn't already matched)
                         correct[pred_idx] = ious_all[idx] > iouv
-
-                        # compute matched GT area (pixel area from scaled tbox)
-                        matched_gt_box = tbox[tgt_idx]  # (x1,y1,x2,y2) in pixels
+                        
+                        # ✅ FIX: Compute area here (after the continue check)
+                        matched_gt_box = tbox[tgt_idx]
                         mw = (matched_gt_box[2] - matched_gt_box[0]).clamp(min=0.0)
                         mh = (matched_gt_box[3] - matched_gt_box[1]).clamp(min=0.0)
                         matched_areas[pred_idx] = (mw * mh)
-
-                        # stop early if all targets found
+                        
                         if len(detected) == nl:
                             break
 
@@ -482,7 +481,27 @@ def test(data,
     print("\n" + "="*80)
     print("📏 Computing Size-Based Performance Metrics...")
     print("="*80)
+    # Add this RIGHT BEFORE: size_metrics = compute_size_based_ap_safe(stats, img_wh=imgsz)
 
+    print("\n🔍 DEBUG: Stats Analysis")
+    print(f"Total predictions across all images: {len(stats[4])}")
+    print(f"Predictions with matched_areas > 0: {(stats[4] > 0).sum()}")
+    print(f"Predictions with matched_areas = 0: {(stats[4] == 0).sum()}")
+    print(f"True positives (tp[:, 0] > 0): {(stats[0][:, 0] > 0).sum()}")
+    print(f"False positives: {(stats[0][:, 0] == 0).sum()}")
+    print(f"\nMatched area distribution:")
+    print(f"  Min (non-zero): {stats[4][stats[4] > 0].min():.0f}")
+    print(f"  Max: {stats[4].max():.0f}")
+    print(f"  Mean (non-zero): {stats[4][stats[4] > 0].mean():.0f}")
+
+    # Check correlation
+    has_area = stats[4] > 0
+    is_tp = stats[0][:, 0] > 0
+    print(f"\nCorrelation check:")
+    print(f"  TPs with area > 0: {(is_tp & has_area).sum()}")
+    print(f"  TPs with area = 0: {(is_tp & ~has_area).sum()} ← Should be 0!")
+    print(f"  FPs with area > 0: {(~is_tp & has_area).sum()} ← Should be 0!")
+    print(f"  FPs with area = 0: {(~is_tp & ~has_area).sum()}")
     size_metrics = compute_size_based_ap_safe(stats, img_wh=imgsz)
 
     # Print results
