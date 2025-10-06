@@ -69,13 +69,12 @@ def compute_efficiency_metrics(model, device, input_shape=(640, 640)):
         'inference_time_ms': avg_time * 1000
     }
 
-def compute_size_based_ap_safe(stats_with_areas, img_wh=None):
+def compute_size_based_ap_safe(stats_with_areas, all_gt_areas, img_wh=None):
     """
-    stats_with_areas: list/tuple [tp, conf, pred_cls, target_cls, matched_gt_areas]
-      - matched_gt_areas: either absolute pixel areas or normalized (w*h in [0,1]).
-    img_wh: tuple (W, H) or int imgsz if matched_gt_areas are normalized. If None, assume pixel areas.
-
-    Returns dict with keys: mAP_small, mAP_medium, mAP_large, small_count, medium_count, large_count
+    COCO-style size-based AP computation
+    
+    stats_with_areas: [tp, conf, pred_cls, target_cls, matched_gt_areas, matched_gt_idx]
+    all_gt_areas: np.array of ALL ground truth areas from dataset
     """
     import numpy as np
     from utils.metrics import ap_per_class
@@ -85,91 +84,99 @@ def compute_size_based_ap_safe(stats_with_areas, img_wh=None):
         'small_count': 0, 'medium_count': 0, 'large_count': 0
     }
 
-    if not stats_with_areas or len(stats_with_areas) < 5:
+    if not stats_with_areas or len(stats_with_areas) < 6:  # ✅ Now need 6 elements
         print("⚠️  Size-based AP: stats missing or malformed.")
         return default_metrics
 
     try:
-        tp, conf, pred_cls, target_cls, matched_gt_areas = stats_with_areas
+        tp, conf, pred_cls, target_cls, matched_gt_areas, matched_gt_idx = stats_with_areas  # ✅ Unpack 6
         tp = np.asarray(tp)
         conf = np.asarray(conf)
         pred_cls = np.asarray(pred_cls)
         target_cls = np.asarray(target_cls)
         matched_gt_areas = np.asarray(matched_gt_areas).astype(float)
+        matched_gt_idx = np.asarray(matched_gt_idx).astype(int)  # ✅ New
+        all_gt_areas = np.asarray(all_gt_areas).astype(float)     # ✅ New
 
         if tp.size == 0:
             return default_metrics
 
-        # Determine if matched_gt_areas are normalized (likely <= 1.0) or in pixels (>1)
-        if matched_gt_areas.size > 0:
-            max_area = matched_gt_areas.max()
-            if max_area <= 1.0 and img_wh is not None:
-                # assume normalized area (w*h in [0,1]) -> convert to pixels
-                if isinstance(img_wh, (list, tuple)):
-                    W, H = img_wh
-                else:
-                    W = H = int(img_wh)
-                matched_gt_areas = matched_gt_areas * (W * H)
-            # else assume already pixel areas
-        else:
-            # no matched areas recorded
-            print("⚠️  compute_size_based_ap_safe: no matched_gt_areas provided (all zeros).")
-            matched_gt_areas = np.zeros(tp.shape[0], dtype=float)
-
-
-        # COCO thresholds in pixels
+        # COCO thresholds
         small_thresh = 32 ** 2    # 1024
         large_thresh = 96 ** 2    # 9216
 
-        has_match = matched_gt_areas > 0  # Only TPs have matched areas
-        small_mask = has_match & (matched_gt_areas < small_thresh)
-        medium_mask = has_match & (matched_gt_areas >= small_thresh) & (matched_gt_areas < large_thresh)
-        large_mask = has_match & (matched_gt_areas >= large_thresh)
+        # ✅ Categorize GTs by size (not predictions!)
+        small_gt_mask = all_gt_areas < small_thresh
+        medium_gt_mask = (all_gt_areas >= small_thresh) & (all_gt_areas < large_thresh)
+        large_gt_mask = all_gt_areas >= large_thresh
 
-        small_count = int(small_mask.sum())
-        medium_count = int(medium_mask.sum())
-        large_count = int(large_mask.sum())
+        small_gt_count = int(small_gt_mask.sum())
+        medium_gt_count = int(medium_gt_mask.sum())
+        large_gt_count = int(large_gt_mask.sum())
 
-        print("\n📏 Size-based Detection Counts:")
-        print(f"   Small:  {small_count} detections")
-        print(f"   Medium: {medium_count} detections")
-        print(f"   Large:  {large_count} detections")
+        print("\n📏 Size-based Ground Truth Distribution:")
+        print(f"   Small GTs:  {small_gt_count}")
+        print(f"   Medium GTs: {medium_gt_count}")
+        print(f"   Large GTs:  {large_gt_count}")
+
+        def compute_size_ap(gt_mask, size_name):
+            """Compute AP for predictions matched to GTs of this size"""
+            # Target classes for this size only
+            tcls_size = target_cls[gt_mask]
+            
+            if len(tcls_size) == 0:
+                print(f"   {size_name}: No GTs → mAP = 0.0")
+                return 0.0
+            
+            # ✅ KEY FIX: Predictions matched to GTs in this size category
+            # matched_gt_idx[i] = index of GT that pred[i] matched, or -1 if no match
+            has_match = matched_gt_idx >= 0
+            matched_to_size = np.zeros(len(matched_gt_idx), dtype=bool)
+            matched_to_size[has_match] = gt_mask[matched_gt_idx[has_match]]
+            
+            # ✅ Set TP to False for preds NOT matched to this size
+            tp_size = tp.copy()
+            tp_size[~matched_to_size] = False  # All IoU thresholds
+            
+            # Count actual TPs for this size
+            if tp_size.ndim == 2:
+                tp_count = (tp_size[:, 0]).sum()  # Use IoU=0.5 threshold
+            else:
+                tp_count = tp_size.sum()
+            
+            if tp_count == 0:
+                print(f"   {size_name}: 0 TPs / {len(tcls_size)} GTs → mAP = 0.0")
+                return 0.0
+            
+            # Compute AP with size-specific targets
+            p, r, ap, f1, ap_class = ap_per_class(tp_size, conf, pred_cls, tcls_size, plot=False)
+            
+            if ap is None or ap.size == 0:
+                return 0.0
+            
+            ap = np.asarray(ap)
+            ap50 = ap[:, 0] if ap.ndim == 2 else ap
+            mean_ap = float(np.nanmean(ap50)) if ap50.size > 0 else 0.0
+            
+            print(f"   {size_name}: {tp_count} TPs / {len(tcls_size)} GTs → mAP@0.5 = {mean_ap:.3f}")
+            return mean_ap
 
         results = {
-            'small_count': small_count,
-            'medium_count': medium_count,
-            'large_count': large_count
+            'small_count': small_gt_count,
+            'medium_count': medium_gt_count,
+            'large_count': large_gt_count,
+            'mAP_small': compute_size_ap(small_gt_mask, "Small"),
+            'mAP_medium': compute_size_ap(medium_gt_mask, "Medium"),
+            'mAP_large': compute_size_ap(large_gt_mask, "Large")
         }
-
-        def compute_ap_for_mask(mask):
-            if mask.sum() == 0:
-                return 0.0
-            tp_size = tp[mask]
-            conf_size = conf[mask]
-            pred_cls_size = pred_cls[mask]
-            p, r, ap, f1, ap_class = ap_per_class(tp_size, conf_size, pred_cls_size, target_cls, plot=False)
-            if ap is None or getattr(ap, "size", 0) == 0:
-                return 0.0
-            ap = np.asarray(ap)
-            if ap.ndim == 2:
-                ap50 = ap[:, 0]
-            else:
-                ap50 = ap
-            return float(np.nanmean(ap50)) if ap50.size > 0 else 0.0
-
-        results['mAP_small'] = compute_ap_for_mask(small_mask)
-        results['mAP_medium'] = compute_ap_for_mask(medium_mask)
-        results['mAP_large'] = compute_ap_for_mask(large_mask)
 
         return results
 
     except Exception as e:
         import traceback
-        print(f"❌ Error in size-based AP computation: {e}")
+        print(f"❌ Error in size-based AP: {e}")
         traceback.print_exc()
         return default_metrics
-
-
 
 def compute_efficiency_metrics(model, device, input_shape=(640, 640)):
     """Compute FPS, Params, GFLOPs for efficiency analysis"""
@@ -439,7 +446,9 @@ def test(data,
                         matched_gt_box = tbox[tgt_idx]
                         mw = (matched_gt_box[2] - matched_gt_box[0]).clamp(min=0.0)
                         mh = (matched_gt_box[3] - matched_gt_box[1]).clamp(min=0.0)
+                        matched_gt_idx = torch.full((pred.shape[0],), -1, dtype=torch.long, device=device)  # Add this before loop
                         matched_areas[pred_idx] = (mw * mh)
+                        matched_gt_idx[pred_idx] = tgt_idx 
                         
                         if len(detected) == nl:
                             break
@@ -450,7 +459,8 @@ def test(data,
                 pred[:, 4].cpu(), 
                 pred[:, 5].cpu(), 
                 tcls,
-                matched_areas.cpu()  # ✅ Include matched GT areas
+                matched_areas.cpu(),  # ✅ Include matched GT areas
+                matched_gt_idx.cpu() 
             ))
 
         # Plot images
