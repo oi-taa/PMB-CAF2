@@ -116,20 +116,15 @@ def compute_size_based_ap_safe(stats_with_areas, img_wh=None):
             print("⚠️  compute_size_based_ap_safe: no matched_gt_areas provided (all zeros).")
             matched_gt_areas = np.zeros(tp.shape[0], dtype=float)
 
-        # make a boolean mask of true positives (handle tp 1D or 2D)
-        if tp.ndim == 2:
-            tp_mask_primary = tp[:, 0] > 0
-        else:
-            tp_mask_primary = tp > 0
 
         # COCO thresholds in pixels
         small_thresh = 32 ** 2    # 1024
         large_thresh = 96 ** 2    # 9216
 
-        # masks for each size category (only for predictions that are TPs)
-        small_mask = tp_mask_primary & (matched_gt_areas < small_thresh)
-        medium_mask = tp_mask_primary & (matched_gt_areas >= small_thresh) & (matched_gt_areas < large_thresh)
-        large_mask = tp_mask_primary & (matched_gt_areas >= large_thresh)
+        has_match = matched_gt_areas > 0  # Only TPs have matched areas
+        small_mask = has_match & (matched_gt_areas < small_thresh)
+        medium_mask = has_match & (matched_gt_areas >= small_thresh) & (matched_gt_areas < large_thresh)
+        large_mask = has_match & (matched_gt_areas >= large_thresh)
 
         small_count = int(small_mask.sum())
         medium_count = int(medium_mask.sum())
