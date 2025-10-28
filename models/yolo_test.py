@@ -801,6 +801,44 @@ def parse_model(d, ch):  # model_dict, input_channels(3)
             m_.thermal_pos_embed = None
         elif m is Concat:
             c2 = sum([ch[x] for x in f])
+        elif m is BCAM_ScaleAdaptive:
+            if isinstance(f, list):
+                f_idx = f[0]
+            else:
+                f_idx = f
+            
+            if f_idx >= len(ch):
+                raise IndexError(f"BCAM_ScaleAdaptive: f_idx={f_idx} >= len(ch)={len(ch)}")
+            
+            c2 = ch[f_idx]  # Output channels same as input
+            
+            # args should be [scale] or [scale, learnable_weights]
+            # e.g., ['P5'] or ['P4', True]
+            if len(args) == 0:
+                raise ValueError("BCAM_ScaleAdaptive requires scale argument")
+            
+            scale = args[0]
+            learnable = args[1] if len(args) > 1 else False
+            
+            m_ = BCAM_ScaleAdaptive(c2, scale=scale, learnable_weights=learnable)
+
+        elif m is ScaleAdaptiveFusion:
+            if isinstance(f, list):
+                f_idx = f[0]
+            else:
+                f_idx = f
+            
+            if f_idx >= len(ch):
+                raise IndexError(f"ScaleAdaptiveFusion: f_idx={f_idx} >= len(ch)={len(ch)}")
+            
+            c2 = ch[f_idx]  # Output channels same as input
+            
+            # args should be [w_thermal] or [w_thermal, learnable]
+            # e.g., [0.6] or [0.6, True]
+            w_thermal = args[0] if len(args) > 0 else 0.6
+            learnable = args[1] if len(args) > 1 else False
+            
+            m_ = ScaleAdaptiveFusion(c2, w_thermal=w_thermal, learnable=learnable)
         elif m is SCP_Enhanced_Upsample:
             print(f"DEBUG: SCP_Enhanced_Upsample module with f={f}")
             if isinstance(f, list) and len(f) == 2:

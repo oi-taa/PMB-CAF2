@@ -1,0 +1,105 @@
+# Scale-Adaptive Fusion Hierarchy
+# P5: BCAM w_thermal=0.4 (RGB emphasis)
+# P4: BCAM w_thermal=0.5 (balanced) + SCP from P5
+# P3: Weighted fusion w_thermal=0.6 (thermal emphasis) + context from P4
+
+nc: 3
+depth_multiple: 1.00
+width_multiple: 1.00
+
+anchors:
+  - [10,13, 16,30, 33,23]
+  - [30,61, 62,45, 59,119]  
+  - [116,90, 156,198, 373,326]
+
+backbone:
+  [
+    ######### Standard YOLO Dual Streams (0-19) #############
+    # RGB Stream: 0-9
+    [-1, 1, Focus, [64, 3]],        # 0
+    [-1, 1, Conv, [128, 3, 2]],     # 1
+    [-1, 3, C3, [128]],             # 2
+    [-1, 1, Conv, [256, 3, 2]],     # 3
+    [-1, 9, C3, [256]],             # 4 <- RGB P3 (256ch)
+    [-1, 1, Conv, [512, 3, 2]],     # 5
+    [-1, 9, C3, [512]],             # 6 <- RGB P4 (512ch)
+    [-1, 1, Conv, [1024, 3, 2]],    # 7
+    [-1, 1, SPP, [1024, [5, 9, 13]]], # 8
+    [-1, 3, C3, [1024, False]],     # 9 <- RGB P5 (1024ch)
+
+    # Thermal Stream: 10-19
+    [-4, 1, Focus, [64, 3]],        # 10
+    [-1, 1, Conv, [128, 3, 2]],     # 11
+    [-1, 3, C3, [128]],             # 12
+    [-1, 1, Conv, [256, 3, 2]],     # 13
+    [-1, 9, C3, [256]],             # 14 <- Thermal P3 (256ch)
+    [-1, 1, Conv, [512, 3, 2]],     # 15
+    [-1, 9, C3, [512]],             # 16 <- Thermal P4 (512ch)
+    [-1, 1, Conv, [1024, 3, 2]],    # 17
+    [-1, 1, SPP, [1024, [5, 9, 13]]], # 18
+    [-1, 3, C3, [1024, False]],     # 19 <- Thermal P5 (1024ch)
+
+    ######### P5: BCAM with LOW thermal weight (0.4) #############
+    [[9,19], 1, BCAM_ScaleAdaptive, [1024, 'P5']],  # 20: P5 fused (w_thermal=0.4)
+    
+    ######### P4: SCP + BCAM with BALANCED weight (0.5) #############
+    # SCP: Inject P5 context into P4
+    [20, 1, Conv, [64, 1, 1]],                      # 21: Project P5 (1024→64)
+    [[20, 21], 1, SCP_Enhanced_Upsample, [64]],     # 22: SCP weighted context
+    
+    # Prepare separate RGB and Thermal P4 inputs with context
+    [[6, 22], 1, Concat, [1]],                      # 23: RGB_P4 + ctx (512+64=576)
+    [23, 1, Conv, [512, 1, 1]],                     # 24: Project (576→512)
+    
+    [[16, 22], 1, Concat, [1]],                     # 25: Thermal_P4 + ctx (512+64=576)
+    [25, 1, Conv, [512, 1, 1]],                     # 26: Project (576→512)
+    
+    # P4 BCAM with balanced weighting
+    [[24, 26], 1, BCAM_ScaleAdaptive, [512, 'P4']], # 27: P4 fused (w_thermal=0.5)
+    
+    ######### P3: Weighted Fusion with HIGH thermal weight (0.6) #############
+    # Project and upsample P4 context
+    [27, 1, Conv, [64, 1, 1]],                      # 28: Project P4 (512→64)
+    [-1, 1, nn.Upsample, [None, 2, 'nearest']],     # 29: Upsample to P3 size
+    
+    # Add context to RGB P3
+    [[4, 29], 1, Concat, [1]],                      # 30: RGB_P3 + ctx (256+64=320)
+    [30, 1, Conv, [256, 1, 1]],                     # 31: Project (320→256)
+    
+    # Add context to Thermal P3
+    [[14, 29], 1, Concat, [1]],                     # 32: Thermal_P3 + ctx (256+64=320)
+    [32, 1, Conv, [256, 1, 1]],                     # 33: Project (320→256)
+    
+    # P3 Weighted Fusion (NO BCAM - direct addition)
+    [[31, 33], 1, ScaleAdaptiveFusion, [256, 0.6]], # 34: P3 fused (w_thermal=0.6)
+  ]
+
+head:
+  [
+    ######### Detection Head #############
+    # P5 path
+    [20, 1, Conv, [512, 1, 1]],                     # 35: Project P5 for head
+    [-1, 1, nn.Upsample, [None, 2, 'nearest']],     # 36: P5 upsample
+    
+    # P4 path
+    [27, 1, Conv, [256, 1, 1]],                     # 37: Project P4 for head
+    [[36, 37], 1, Concat, [1]],                     # 38: Concat P5_up + P4
+    [-1, 3, C3, [512, False]],                      # 39: Process P4 features
+    
+    # P3 path
+    [-1, 1, Conv, [256, 1, 1]],                     # 40: Project for P3
+    [-1, 1, nn.Upsample, [None, 2, 'nearest']],     # 41: Upsample to P3
+    [[41, 34], 1, Concat, [1]],                     # 42: Concat P4_up + P3_fused
+    [-1, 3, C3, [256, False]],                      # 43: P3 final (256ch)
+
+    # Downsample path
+    [-1, 1, Conv, [256, 3, 2]],                     # 44: P3→P4 down
+    [[44, 39], 1, Concat, [1]],                     # 45: Cat with P4
+    [-1, 3, C3, [512, False]],                      # 46: P4 final (512ch)
+
+    [-1, 1, Conv, [512, 3, 2]],                     # 47: P4→P5 down
+    [[47, 35], 1, Concat, [1]],                     # 48: Cat with P5
+    [-1, 3, C3, [1024, False]],                     # 49: P5 final (1024ch)
+
+    [[43, 46, 49], 1, Detect, [nc, anchors]],       # 50: Detection heads (P3, P4, P5)
+  ]

@@ -1497,3 +1497,121 @@ class Progressive_Projection(nn.Module):
         fused = self.fusion_proj(fused_concat)
         
         return fused
+    
+class ScaleAdaptiveFusion(nn.Module):
+    """
+    Direct weighted fusion without cross-attention.
+    Used at P3 where attention on context-injected features degrades performance.
+    
+    Args:
+        channels: Number of input/output channels
+        w_thermal: Weight for thermal modality (default 0.6 for P3)
+        learnable: If True, weights are learnable parameters
+    
+    Returns:
+        Single fused tensor (B, C, H, W)
+    """
+    def __init__(self, channels, w_thermal=0.6, learnable=False):
+        super().__init__()
+        self.channels = channels
+        self.learnable = learnable
+        
+        if learnable:
+            # Initialize as parameters
+            self.w_thermal = nn.Parameter(torch.tensor(w_thermal))
+            self.w_rgb = nn.Parameter(torch.tensor(1.0 - w_thermal))
+        else:
+            # Fixed weights
+            self.register_buffer('w_thermal', torch.tensor(w_thermal))
+            self.register_buffer('w_rgb', torch.tensor(1.0 - w_thermal))
+    
+    def forward(self, x):
+        """
+        x: tuple/list of (rgb_features, thermal_features)
+           Each is (B, C, H, W)
+        
+        Returns: (B, C, H, W) weighted fusion
+        """
+        if isinstance(x, (tuple, list)) and len(x) == 2:
+            rgb, thermal = x[0], x[1]
+        else:
+            raise ValueError(f"ScaleAdaptiveFusion expects tuple of 2 tensors, got {type(x)}")
+        
+        # Validate shapes
+        assert rgb.shape == thermal.shape, \
+            f"RGB and Thermal shapes must match: {rgb.shape} vs {thermal.shape}"
+        assert rgb.shape[1] == self.channels, \
+            f"Expected {self.channels} channels, got {rgb.shape[1]}"
+        
+        # Weighted fusion
+        if self.learnable:
+            # Normalize weights to sum to 1
+            w_sum = self.w_rgb + self.w_thermal
+            w_rgb_norm = self.w_rgb / w_sum
+            w_thermal_norm = self.w_thermal / w_sum
+            fused = w_rgb_norm * rgb + w_thermal_norm * thermal
+        else:
+            fused = self.w_rgb * rgb + self.w_thermal * thermal
+        
+        return fused
+
+
+class BCAM_ScaleAdaptive(BCAM_SingleOutput):
+    """
+    BCAM with scale-dependent thermal weighting.
+    Used at P5 and P4 where cross-attention is effective.
+    
+    Extends BCAM_SingleOutput to add weighted fusion after attention.
+    
+    Args:
+        d_model: Feature dimension
+        scale: 'P5', 'P4', or 'P3' (though P3 should use ScaleAdaptiveFusion)
+        learnable_weights: If True, fusion weights are learnable
+        **kwargs: Passed to parent BCAM
+    """
+    def __init__(self, d_model, scale='P5', learnable_weights=False, **kwargs):
+        super().__init__(d_model, output_mode='fused', **kwargs)
+        
+        self.scale = scale
+        self.learnable_weights = learnable_weights
+        
+        # Scale-dependent thermal weights
+        thermal_weight_map = {
+            'P5': 0.4,  # Large objects - emphasize RGB texture
+            'P4': 0.5,  # Medium objects - balanced
+            'P3': 0.6   # Small objects - emphasize thermal shape (shouldn't use this class though)
+        }
+        
+        if scale not in thermal_weight_map:
+            raise ValueError(f"Scale must be P3/P4/P5, got {scale}")
+        
+        w_thermal_init = thermal_weight_map[scale]
+        
+        if learnable_weights:
+            self.w_thermal = nn.Parameter(torch.tensor(w_thermal_init))
+            self.w_rgb = nn.Parameter(torch.tensor(1.0 - w_thermal_init))
+        else:
+            self.register_buffer('w_thermal', torch.tensor(w_thermal_init))
+            self.register_buffer('w_rgb', torch.tensor(1.0 - w_thermal_init))
+    
+    def forward(self, x, **kwargs):
+        """
+        Forward pass with scale-adaptive weighting applied to BCAM output.
+        
+        BCAM_SingleOutput returns single fused tensor.
+        We re-weight the internal rgb/thermal outputs before final fusion.
+        """
+        # Get parent class output - but we need to intercept before final fusion
+        # So we call BCAM (grandparent) instead to get 3-tuple
+        rgb_final, thermal_final, _ = BCAM.forward(self, x, **kwargs)
+        
+        # Apply scale-adaptive weighting
+        if self.learnable_weights:
+            w_sum = self.w_rgb + self.w_thermal
+            w_rgb_norm = self.w_rgb / w_sum
+            w_thermal_norm = self.w_thermal / w_sum
+            weighted_fused = w_rgb_norm * rgb_final + w_thermal_norm * thermal_final
+        else:
+            weighted_fused = self.w_rgb * rgb_final + self.w_thermal * thermal_final
+        
+        return weighted_fused
