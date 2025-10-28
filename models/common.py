@@ -1572,7 +1572,7 @@ class BCAM_ScaleAdaptive(BCAM_SingleOutput):
     def __init__(self, d_model, scale='P5', learnable_weights=False, **kwargs):
         super().__init__(d_model, output_mode='fused', **kwargs)
         
-        self.scale = scale
+        self.pyramid_scale = scale
         self.learnable_weights = learnable_weights
         
         # Scale-dependent thermal weights
