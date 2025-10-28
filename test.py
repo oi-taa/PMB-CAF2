@@ -455,7 +455,6 @@ def test(data,
                         matched_gt_box = tbox[tgt_idx]
                         mw = (matched_gt_box[2] - matched_gt_box[0]).clamp(min=0.0)
                         mh = (matched_gt_box[3] - matched_gt_box[1]).clamp(min=0.0)
-                        matched_gt_idx = torch.full((pred.shape[0],), -1, dtype=torch.long, device=device)  # Add this before loop
                         matched_areas[pred_idx] = (mw * mh)
                         matched_gt_idx[pred_idx] = gt_offset + tgt_idx 
                         
@@ -505,6 +504,17 @@ def test(data,
 
     
     size_metrics = compute_size_based_ap_safe(stats, all_gt_areas, img_wh=imgsz)
+    print(f"\n{'='*80}")
+    print(f"📊 GROUND TRUTH SIZE DISTRIBUTION (COCO Thresholds)")
+    print(f"{'='*80}")
+    total_gts = len(all_gt_areas)
+    print(f"Total GTs processed: {total_gts}")
+    if total_gts > 0:
+        areas_arr = np.array(all_gt_areas)
+        print(f"  Area range: [{areas_arr.min():.1f}, {areas_arr.max():.1f}] pixels²")
+        print(f"  Mean area: {areas_arr.mean():.1f} pixels²")
+        print(f"  Median area: {np.median(areas_arr):.1f} pixels²")
+    print(f"{'='*80}\n")
 
     # Print results
     pf = '%20s' + '%12i' * 2 + '%12.3g' * 5  # print format
