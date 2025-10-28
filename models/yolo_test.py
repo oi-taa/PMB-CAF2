@@ -810,17 +810,23 @@ def parse_model(d, ch):  # model_dict, input_channels(3)
             if f_idx >= len(ch):
                 raise IndexError(f"BCAM_ScaleAdaptive: f_idx={f_idx} >= len(ch)={len(ch)}")
             
-            c2 = ch[f_idx]  # Output channels same as input
+            d_model = ch[f_idx]  # Get d_model from channel list (NOT from args)
+            c2 = d_model
             
-            # args should be [scale] or [scale, learnable_weights]
-            # e.g., ['P5'] or ['P4', True]
-            if len(args) == 0:
-                raise ValueError("BCAM_ScaleAdaptive requires scale argument")
+            # Parse scale from args
+            scale = None
+            learnable = False
             
-            scale = args[0]
-            learnable = args[1] if len(args) > 1 else False
+            for arg in args:
+                if isinstance(arg, str) and arg in ['P3', 'P4', 'P5']:
+                    scale = arg
+                elif isinstance(arg, bool):
+                    learnable = arg
             
-            m_ = BCAM_ScaleAdaptive(c2, scale=scale, learnable_weights=learnable)
+            if scale is None:
+                raise ValueError(f"BCAM_ScaleAdaptive requires scale ('P3'/'P4'/'P5'), got {args}")
+            
+            m_ = BCAM_ScaleAdaptive(d_model, scale=scale, learnable_weights=learnable)
 
         elif m is ScaleAdaptiveFusion:
             if isinstance(f, list):
@@ -831,14 +837,20 @@ def parse_model(d, ch):  # model_dict, input_channels(3)
             if f_idx >= len(ch):
                 raise IndexError(f"ScaleAdaptiveFusion: f_idx={f_idx} >= len(ch)={len(ch)}")
             
-            c2 = ch[f_idx]  # Output channels same as input
+            channels = ch[f_idx]  # Get channels from channel list (NOT from args)
+            c2 = channels
             
-            # args should be [w_thermal] or [w_thermal, learnable]
-            # e.g., [0.6] or [0.6, True]
-            w_thermal = args[0] if len(args) > 0 else 0.6
-            learnable = args[1] if len(args) > 1 else False
+            # Parse w_thermal from args
+            w_thermal = 0.6  # default
+            learnable = False
             
-            m_ = ScaleAdaptiveFusion(c2, w_thermal=w_thermal, learnable=learnable)
+            for arg in args:
+                if isinstance(arg, (int, float)) and 0 < arg <= 1:
+                    w_thermal = float(arg)
+                elif isinstance(arg, bool):
+                    learnable = arg
+            
+            m_ = ScaleAdaptiveFusion(channels, w_thermal=w_thermal, learnable=learnable)
         elif m is SCP_Enhanced_Upsample:
             print(f"DEBUG: SCP_Enhanced_Upsample module with f={f}")
             if isinstance(f, list) and len(f) == 2:

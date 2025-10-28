@@ -40,7 +40,7 @@ backbone:
     [-1, 3, C3, [1024, False]],     # 19 <- Thermal P5 (1024ch)
 
     ######### P5: BCAM with LOW thermal weight (0.4) #############
-    [[9,19], 1, BCAM_ScaleAdaptive, [1024, 'P5']],  # 20: P5 fused (w_thermal=0.4)
+    [[9,19], 1, BCAM_ScaleAdaptive, ['P5']],  # 20: P5 fused (w_thermal=0.4)
     
     ######### P4: SCP + BCAM with BALANCED weight (0.5) #############
     # SCP: Inject P5 context into P4
@@ -55,7 +55,7 @@ backbone:
     [25, 1, Conv, [512, 1, 1]],                     # 26: Project (576→512)
     
     # P4 BCAM with balanced weighting
-    [[24, 26], 1, BCAM_ScaleAdaptive, [512, 'P4']], # 27: P4 fused (w_thermal=0.5)
+    [[24, 26], 1, BCAM_ScaleAdaptive, ['P4']], # 27: P4 fused (w_thermal=0.5)
     
     ######### P3: Weighted Fusion with HIGH thermal weight (0.6) #############
     # Project and upsample P4 context
@@ -71,7 +71,7 @@ backbone:
     [32, 1, Conv, [256, 1, 1]],                     # 33: Project (320→256)
     
     # P3 Weighted Fusion (NO BCAM - direct addition)
-    [[31, 33], 1, ScaleAdaptiveFusion, [256, 0.6]], # 34: P3 fused (w_thermal=0.6)
+    [[31, 33], 1, ScaleAdaptiveFusion, [0.6]], # 34: P3 fused (w_thermal=0.6)
   ]
 
 head:
