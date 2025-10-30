@@ -71,10 +71,8 @@ def compute_efficiency_metrics(model, device, input_shape=(640, 640)):
 
 def compute_size_based_ap_safe(stats_with_areas, all_gt_areas, img_wh=None):
     """
-    COCO-style size-based AP computation
-    
-    stats_with_areas: [tp, conf, pred_cls, target_cls, matched_gt_areas, matched_gt_idx]
-    all_gt_areas: np.array of ALL ground truth areas from dataset
+    Size-based AP using official COCO methodology
+    NOTE: This is approximate - for reportable metrics use --save-json + pycocotools
     """
     import numpy as np
     from utils.metrics import ap_per_class
@@ -84,28 +82,26 @@ def compute_size_based_ap_safe(stats_with_areas, all_gt_areas, img_wh=None):
         'small_count': 0, 'medium_count': 0, 'large_count': 0
     }
 
-    if not stats_with_areas or len(stats_with_areas) < 6:  # ✅ Now need 6 elements
-        print("⚠️  Size-based AP: stats missing or malformed.")
+    if not stats_with_areas or len(stats_with_areas) < 6:
+        print("⚠️  Size-based AP: stats missing")
         return default_metrics
 
     try:
-        tp, conf, pred_cls, target_cls, matched_gt_areas, matched_gt_idx = stats_with_areas  # ✅ Unpack 6
+        tp, conf, pred_cls, target_cls, matched_gt_areas, matched_gt_idx = stats_with_areas
         tp = np.asarray(tp)
         conf = np.asarray(conf)
         pred_cls = np.asarray(pred_cls)
         target_cls = np.asarray(target_cls)
-        matched_gt_areas = np.asarray(matched_gt_areas).astype(float)
-        matched_gt_idx = np.asarray(matched_gt_idx).astype(int)  # ✅ New
-        all_gt_areas = np.asarray(all_gt_areas).astype(float)     # ✅ New
+        all_gt_areas = np.asarray(all_gt_areas).astype(float)
+        matched_gt_idx = np.asarray(matched_gt_idx).astype(int)
 
-        if tp.size == 0:
+        if tp.size == 0 or len(all_gt_areas) == 0:
             return default_metrics
 
         # COCO thresholds
-        small_thresh = 32 ** 2    # 1024
-        large_thresh = 96 ** 2    # 9216
+        small_thresh = 32 ** 2
+        large_thresh = 96 ** 2
 
-        # ✅ Categorize GTs by size (not predictions!)
         small_gt_mask = all_gt_areas < small_thresh
         medium_gt_mask = (all_gt_areas >= small_thresh) & (all_gt_areas < large_thresh)
         large_gt_mask = all_gt_areas >= large_thresh
@@ -114,70 +110,125 @@ def compute_size_based_ap_safe(stats_with_areas, all_gt_areas, img_wh=None):
         medium_gt_count = int(medium_gt_mask.sum())
         large_gt_count = int(large_gt_mask.sum())
 
-        print("\n📏 Size-based Ground Truth Distribution:")
-        print(f"   Small GTs:  {small_gt_count}")
-        print(f"   Medium GTs: {medium_gt_count}")
-        print(f"   Large GTs:  {large_gt_count}")
+        print("\n📏 Ground Truth Size Distribution:")
+        print(f"   Small:  {small_gt_count} objects (< 32²)")
+        print(f"   Medium: {medium_gt_count} objects (32²-96²)")
+        print(f"   Large:  {large_gt_count} objects (> 96²)")
 
-        def compute_size_ap(gt_mask, size_name):
-            tcls_size = target_cls[gt_mask]
+        def compute_for_size(gt_mask, size_name):
+            gt_idx_this_size = np.where(gt_mask)[0]
+            num_gts = len(gt_idx_this_size)
             
-            if len(tcls_size) == 0:
-                print(f"   {size_name}: No GTs → mAP = 0.0")
+            if num_gts == 0:
+                print(f"   {size_name}: No GTs → skip")
                 return 0.0
             
-            # Get predictions matched to this size
-            has_match = matched_gt_idx >= 0
-            matched_to_size = np.zeros(len(matched_gt_idx), dtype=bool)
-            matched_to_size[has_match] = gt_mask[matched_gt_idx[has_match]]
+            # Find predictions matched to this size
+            pred_matched_this_size = np.array([
+                (matched_gt_idx[i] in gt_idx_this_size) if matched_gt_idx[i] >= 0 else False
+                for i in range(len(matched_gt_idx))
+            ])
             
-            # ✅ FILTER: Only keep predictions relevant to this size
-            # Include: matched to this size OR high confidence (potential FPs for this size)
-            relevant = matched_to_size | (conf > 0.05)
-            
-            if relevant.sum() == 0:
+            if not pred_matched_this_size.any():
+                print(f"   {size_name}: No matched predictions → 0.0")
                 return 0.0
             
-            # Create filtered tp where non-size-matches are False
-            tp_filtered = tp[relevant].copy()
-            tp_filtered[~matched_to_size[relevant]] = False
+            # Subset to matched predictions only
+            tp_subset = tp[pred_matched_this_size]
+            conf_subset = conf[pred_matched_this_size]
+            pred_cls_subset = pred_cls[pred_matched_this_size]
+            tcls_subset = target_cls[gt_mask]
             
-            # Pass only relevant predictions
+            # Compute AP
             p, r, ap, f1, ap_class = ap_per_class(
-                tp_filtered, 
-                conf[relevant], 
-                pred_cls[relevant], 
-                tcls_size, 
-                plot=False
+                tp_subset, conf_subset, pred_cls_subset, tcls_subset, plot=False
             )
             
             if ap is None or ap.size == 0:
                 return 0.0
             
+            # mAP@[0.5:0.95]
             ap = np.asarray(ap)
-            ap50 = ap[:, 0] if ap.ndim == 2 else ap
-            mean_ap = float(np.nanmean(ap50)) if ap50.size > 0 else 0.0
+            mean_ap = float(np.nanmean(ap.mean(1) if ap.ndim == 2 else ap))
             
-            tp_count = (tp_filtered[:, 0] if tp_filtered.ndim == 2 else tp_filtered).sum()
-            print(f"   {size_name}: {int(tp_count)} TPs / {len(tcls_size)} GTs → mAP@0.5 = {mean_ap:.3f}")
+            tp_count = int((tp_subset[:, 0] if tp_subset.ndim == 2 else tp_subset).sum())
+            print(f"   {size_name}: {tp_count}/{num_gts} TPs → mAP@[0.5:0.95] = {mean_ap:.3f}")
+            
             return mean_ap
 
-        results = {
+        return {
             'small_count': small_gt_count,
             'medium_count': medium_gt_count,
             'large_count': large_gt_count,
-            'mAP_small': compute_size_ap(small_gt_mask, "Small"),
-            'mAP_medium': compute_size_ap(medium_gt_mask, "Medium"),
-            'mAP_large': compute_size_ap(large_gt_mask, "Large")
+            'mAP_small': compute_for_size(small_gt_mask, "Small"),
+            'mAP_medium': compute_for_size(medium_gt_mask, "Medium"),
+            'mAP_large': compute_for_size(large_gt_mask, "Large")
         }
-
-        return results
 
     except Exception as e:
         import traceback
-        print(f"❌ Error in size-based AP: {e}")
+        print(f"❌ Size AP error: {e}")
         traceback.print_exc()
         return default_metrics
+
+def evaluate_coco_size_based_official(pred_json, anno_json):
+    """
+    Official COCO evaluation with size-based metrics
+    This produces REPORTABLE results for publications
+    """
+    try:
+        from pycocotools.coco import COCO
+        from pycocotools.cocoeval import COCOeval
+        
+        print("\n" + "="*80)
+        print("📊 OFFICIAL COCO SIZE-BASED EVALUATION (REPORTABLE)")
+        print("="*80)
+        
+        coco_gt = COCO(anno_json)
+        coco_dt = coco_gt.loadRes(pred_json)
+        
+        results = {}
+        
+        # Overall
+        print("\n🎯 OVERALL:")
+        coco_eval = COCOeval(coco_gt, coco_dt, 'bbox')
+        coco_eval.evaluate()
+        coco_eval.accumulate()
+        coco_eval.summarize()
+        results['mAP_overall'] = float(coco_eval.stats[0])
+        results['mAP50_overall'] = float(coco_eval.stats[1])
+        
+        # Size-specific
+        for area_name, area_range in [('small', [0, 32**2]), 
+                                      ('medium', [32**2, 96**2]), 
+                                      ('large', [96**2, 1e5**2])]:
+            print(f"\n📏 {area_name.upper()} (area: {area_range[0]}-{area_range[1]} px²):")
+            coco_eval = COCOeval(coco_gt, coco_dt, 'bbox')
+            coco_eval.params.areaRng = [area_range]
+            coco_eval.params.areaRngLbl = [area_name]
+            coco_eval.evaluate()
+            coco_eval.accumulate()
+            coco_eval.summarize()
+            results[f'mAP_{area_name}'] = float(coco_eval.stats[0])
+            results[f'mAP50_{area_name}'] = float(coco_eval.stats[1])
+        
+        print("\n" + "="*80)
+        print("✅ OFFICIAL REPORTABLE METRICS:")
+        print("="*80)
+        print(f"Overall  mAP@[0.5:0.95]: {results['mAP_overall']:.3f}")
+        print(f"Small    mAP@[0.5:0.95]: {results['mAP_small']:.3f}  ← REPORTABLE")
+        print(f"Medium   mAP@[0.5:0.95]: {results['mAP_medium']:.3f}  ← REPORTABLE")
+        print(f"Large    mAP@[0.5:0.95]: {results['mAP_large']:.3f}  ← REPORTABLE")
+        print("="*80 + "\n")
+        
+        return results
+        
+    except Exception as e:
+        print(f"❌ Official COCO evaluation failed: {e}")
+        print("   Install: pip install pycocotools")
+        import traceback
+        traceback.print_exc()
+        return {}
 
 def compute_efficiency_metrics(model, device, input_shape=(640, 640)):
     """Compute FPS, Params, GFLOPs for efficiency analysis"""
@@ -547,29 +598,55 @@ def test(data,
 
     # Save JSON
     if save_json and len(jdict):
-        w = Path(weights[0] if isinstance(weights, list) else weights).stem if weights is not None else ''  # weights
-        anno_json = '../coco/annotations/instances_val2017.json'  # annotations json
-        pred_json = str(save_dir / f"{w}_predictions.json")  # predictions json
-        print('\nEvaluating pycocotools mAP... saving %s...' % pred_json)
+        w = Path(weights[0] if isinstance(weights, list) else weights).stem if weights is not None else ''
+        
+        # Determine annotation file path
+        if 'coco' in data.get('val_rgb', '').lower():
+            anno_json = '../coco/annotations/instances_val2017.json'
+        else:
+            # For custom datasets, look for annotations.json in data directory
+            data_path = Path(data.get('path', data.get('val_rgb', '.'))).parent
+            anno_json = str(data_path / 'annotations.json')
+        
+        pred_json = str(save_dir / f"{w}_predictions.json")
+        print(f'\n💾 Saving predictions to {pred_json}')
         with open(pred_json, 'w') as f:
             json.dump(jdict, f)
 
-        try:  # https://github.com/cocodataset/cocoapi/blob/master/PythonAPI/pycocoEvalDemo.ipynb
-            from pycocotools.coco import COCO
-            from pycocotools.cocoeval import COCOeval
+        # Try official COCO evaluation
+        if Path(anno_json).exists():
+            print(f"📂 Using GT annotations: {anno_json}")
+            official_results = evaluate_coco_size_based_official(pred_json, anno_json)
+            
+            # Update size metrics with official results if available
+            if official_results:
+                if 'mAP_small' in official_results:
+                    size_metrics['mAP_small'] = official_results['mAP_small']
+                    size_metrics['mAP_medium'] = official_results['mAP_medium']
+                    size_metrics['mAP_large'] = official_results['mAP_large']
+                    print("✅ Using OFFICIAL size-based metrics")
+        else:
+            print(f"⚠️  GT annotations not found: {anno_json}")
+            print("   Create with: python create_coco_annotations.py")
+            print("   Using approximate size metrics instead")
+            
+            # Try standard COCO eval for overall metrics
+            try:
+                from pycocotools.coco import COCO
+                from pycocotools.cocoeval import COCOeval
 
-            anno = COCO(anno_json)  # init annotations api
-            pred = anno.loadRes(pred_json)  # init predictions api
-            eval = COCOeval(anno, pred, 'bbox')
-            if is_coco:
-                eval.params.imgIds = [int(Path(x).stem) for x in dataloader.dataset.img_files]  # image IDs to evaluate
-            eval.evaluate()
-            eval.accumulate()
-            eval.summarize()
-            map, map50 = eval.stats[:2]  # update results (mAP@0.5:0.95, mAP@0.5)
-
-        except Exception as e:
-            print(f'pycocotools unable to run: {e}')
+                if 'coco' in data.get('val_rgb', '').lower():
+                    anno = COCO(anno_json)
+                    pred = anno.loadRes(pred_json)
+                    eval = COCOeval(anno, pred, 'bbox')
+                    if is_coco:
+                        eval.params.imgIds = [int(Path(x).stem) for x in dataloader.dataset.img_files]
+                    eval.evaluate()
+                    eval.accumulate()
+                    eval.summarize()
+                    map, map50 = eval.stats[:2]
+            except Exception as e:
+                print(f'Standard pycocotools unable to run: {e}')
 
     # Return results with size metrics
     model.float()  # for training
