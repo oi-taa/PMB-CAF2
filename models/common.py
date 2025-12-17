@@ -1622,56 +1622,39 @@ class BCAM_TrueSelfAttention_SingleOutput(BCAM_SingleOutput):
     
     Encoder-Decoder Architecture:
     - ENCODER: Each modality attends to ITSELF (intra-modal self-attention)
-      * RGB positions attend to all other RGB positions
-      * Thermal positions attend to all other Thermal positions
-      * Suppresses modality-specific noise (glare, halos)
+    - DECODER: Modalities attend to EACH OTHER (inter-modal cross-attention via parent BCAM)
     
-    - DECODER: Modalities attend to EACH OTHER (inter-modal cross-attention)
-      * Standard BCAM cross-attention
-      * RGB queries Thermal, Thermal queries RGB
-    
-    Args:
-        d_model (int): Channel dimension (512 for P4, 1024 for P5)
-        num_heads (int): Number of attention heads
-        qkv_bias (bool): Whether to use bias in Q,K,V projections
-        qk_scale (float): Scale factor for attention
-        attn_drop (float): Dropout rate for attention weights
-        proj_drop (float): Dropout rate for projections
-    
-    Returns:
-        Tensor: Single fused output [B, C, H, W]
+    Returns: Single fused output [B, C, H, W]
     """
     
-    def __init__(self, d_model, num_heads=8, qkv_bias=False, qk_scale=None, 
-                 attn_drop=0., proj_drop=0.):
-        # Initialize parent BCAM (for cross-attention in decoder)
-        super().__init__(d_model, num_heads=num_heads, qkv_bias=qkv_bias, 
-                     qk_scale=qk_scale, attn_drop=attn_drop, proj_drop=proj_drop)
+    def __init__(self, d_model, num_heads=8):
+        # Initialize parent with ONLY args that BCAM accepts
+        super().__init__(d_model, num_heads=num_heads)
         
         self.d_model = d_model
         self.num_heads = num_heads
         self.head_dim = d_model // num_heads
-        self.scale = qk_scale or self.head_dim ** -0.5
+        self.scale = self.head_dim ** -0.5
         
-        # === ENCODER: RGB Self-Attention (RGB attends to RGB) ===
-        self.rgb_self_q = nn.Linear(d_model, d_model, bias=qkv_bias)
-        self.rgb_self_k = nn.Linear(d_model, d_model, bias=qkv_bias)
-        self.rgb_self_v = nn.Linear(d_model, d_model, bias=qkv_bias)
+        # === ENCODER: RGB Self-Attention ===
+        self.rgb_self_q = nn.Linear(d_model, d_model, bias=False)
+        self.rgb_self_k = nn.Linear(d_model, d_model, bias=False)
+        self.rgb_self_v = nn.Linear(d_model, d_model, bias=False)
         self.rgb_self_proj = nn.Linear(d_model, d_model)
         self.rgb_self_norm = nn.LayerNorm(d_model)
         
-        # === ENCODER: Thermal Self-Attention (Thermal attends to Thermal) ===
-        self.thermal_self_q = nn.Linear(d_model, d_model, bias=qkv_bias)
-        self.thermal_self_k = nn.Linear(d_model, d_model, bias=qkv_bias)
-        self.thermal_self_v = nn.Linear(d_model, d_model, bias=qkv_bias)
+        # === ENCODER: Thermal Self-Attention ===
+        self.thermal_self_q = nn.Linear(d_model, d_model, bias=False)
+        self.thermal_self_k = nn.Linear(d_model, d_model, bias=False)
+        self.thermal_self_v = nn.Linear(d_model, d_model, bias=False)
         self.thermal_self_proj = nn.Linear(d_model, d_model)
         self.thermal_self_norm = nn.LayerNorm(d_model)
         
         # Dropouts
-        self.self_attn_drop = nn.Dropout(attn_drop)
-        self.self_proj_drop = nn.Dropout(proj_drop)
+        self.self_attn_drop = nn.Dropout(0.1)
+        self.self_proj_drop = nn.Dropout(0.1)
         
-        # Learnable scale for self-attention (start small)
+        # Learnable scales (start small)
         self.rgb_self_scale = nn.Parameter(torch.tensor(0.1))
         self.thermal_self_scale = nn.Parameter(torch.tensor(0.1))
         
@@ -1686,15 +1669,7 @@ class BCAM_TrueSelfAttention_SingleOutput(BCAM_SingleOutput):
                 nn.init.constant_(m.bias, 0)
     
     def _multi_head_self_attention(self, q, k, v):
-        """
-        Multi-head self-attention mechanism.
-        
-        Args:
-            q, k, v: [B, N, C] where N = H*W (number of positions)
-        
-        Returns:
-            Tensor: [B, N, C] attended features
-        """
+        """Multi-head self-attention: [B, N, C] -> [B, N, C]"""
         B, N, C = q.shape
         
         # Reshape to [B, num_heads, N, head_dim]
@@ -1702,81 +1677,67 @@ class BCAM_TrueSelfAttention_SingleOutput(BCAM_SingleOutput):
         k = k.reshape(B, N, self.num_heads, self.head_dim).permute(0, 2, 1, 3)
         v = v.reshape(B, N, self.num_heads, self.head_dim).permute(0, 2, 1, 3)
         
-        # Compute attention: Q @ K^T
-        attn = (q @ k.transpose(-2, -1)) * self.scale  # [B, num_heads, N, N]
-        attn = attn.softmax(dim=-1)  # Normalize over keys
+        # Attention: softmax(Q @ K^T / √d) @ V
+        attn = (q @ k.transpose(-2, -1)) * self.scale
+        attn = attn.softmax(dim=-1)
         attn = self.self_attn_drop(attn)
         
-        # Apply attention to values: attn @ V
-        out = (attn @ v).transpose(1, 2).reshape(B, N, C)  # [B, N, C]
-        
+        out = (attn @ v).transpose(1, 2).reshape(B, N, C)
         return out
     
     def forward(self, x):
         """
-        Forward pass: Encoder (self-attention) → Decoder (cross-attention).
+        Encoder (self-attention) → Decoder (cross-attention)
         
         Args:
-            x (tuple): (rgb_fea, thermal_fea)
-                rgb_fea: [B, C, H, W] RGB features
-                thermal_fea: [B, C, H, W] Thermal features
-        
+            x: tuple of (rgb_fea, thermal_fea), each [B, C, H, W]
         Returns:
-            Tensor: [B, C, H, W] Single fused output
+            Single fused tensor [B, C, H, W]
         """
         rgb_fea, thermal_fea = x[0], x[1]
         bs, c, h, w = rgb_fea.shape
         
         # ============================================================
-        # ENCODER STAGE: Intra-Modal Self-Attention
+        # ENCODER: Intra-Modal Self-Attention
         # ============================================================
         
-        # Convert to tokens [B, H*W, C]
-        rgb_tokens = rgb_fea.flatten(2).transpose(1, 2)  # [B, HW, C]
-        thermal_tokens = thermal_fea.flatten(2).transpose(1, 2)  # [B, HW, C]
+        # Convert to tokens [B, HW, C]
+        rgb_tokens = rgb_fea.flatten(2).transpose(1, 2)
+        thermal_tokens = thermal_fea.flatten(2).transpose(1, 2)
         
-        # --- RGB Self-Attention: RGB attends to RGB ---
+        # RGB self-attention
         rgb_normed = self.rgb_self_norm(rgb_tokens)
+        rgb_self_q = self.rgb_self_q(rgb_normed)
+        rgb_self_k = self.rgb_self_k(rgb_normed)
+        rgb_self_v = self.rgb_self_v(rgb_normed)
         
-        # Q, K, V all from RGB
-        rgb_self_q = self.rgb_self_q(rgb_normed)  # [B, HW, C]
-        rgb_self_k = self.rgb_self_k(rgb_normed)  # [B, HW, C]
-        rgb_self_v = self.rgb_self_v(rgb_normed)  # [B, HW, C]
-        
-        # Multi-head self-attention
         rgb_self_attn = self._multi_head_self_attention(rgb_self_q, rgb_self_k, rgb_self_v)
         rgb_self_attn = self.rgb_self_proj(rgb_self_attn)
         rgb_self_attn = self.self_proj_drop(rgb_self_attn)
         
-        # Residual connection with learnable scale
         rgb_refined = rgb_tokens + self.rgb_self_scale * rgb_self_attn
         
-        # --- Thermal Self-Attention: Thermal attends to Thermal ---
+        # Thermal self-attention
         thermal_normed = self.thermal_self_norm(thermal_tokens)
-        
-        # Q, K, V all from Thermal
         thermal_self_q = self.thermal_self_q(thermal_normed)
         thermal_self_k = self.thermal_self_k(thermal_normed)
         thermal_self_v = self.thermal_self_v(thermal_normed)
         
-        # Multi-head self-attention
         thermal_self_attn = self._multi_head_self_attention(thermal_self_q, thermal_self_k, thermal_self_v)
         thermal_self_attn = self.thermal_self_proj(thermal_self_attn)
         thermal_self_attn = self.self_proj_drop(thermal_self_attn)
         
-        # Residual connection with learnable scale
         thermal_refined = thermal_tokens + self.thermal_self_scale * thermal_self_attn
         
         # ============================================================
-        # DECODER STAGE: Inter-Modal Cross-Attention
+        # DECODER: Inter-Modal Cross-Attention (via parent BCAM)
         # ============================================================
         
-        # Convert refined tokens back to spatial [B, C, H, W]
+        # Convert back to spatial [B, C, H, W]
         rgb_refined_spatial = rgb_refined.transpose(1, 2).reshape(bs, c, h, w)
         thermal_refined_spatial = thermal_refined.transpose(1, 2).reshape(bs, c, h, w)
         
-        # Call parent BCAM cross-attention on refined features
-        # This does: RGB queries Thermal, Thermal queries RGB
+        # Call parent BCAM_SingleOutput for cross-attention
         fused = super().forward((rgb_refined_spatial, thermal_refined_spatial))
         
-        return fused  # Single tensor [B, C, H, W]
+        return fused
