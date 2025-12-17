@@ -1645,15 +1645,8 @@ class BCAM_TrueSelfAttention_SingleOutput(BCAM_SingleOutput):
     def __init__(self, d_model, num_heads=8, qkv_bias=False, qk_scale=None, 
                  attn_drop=0., proj_drop=0.):
         # Initialize parent BCAM (for cross-attention in decoder)
-        super().__init__(
-            d_model, 
-            output_mode=output_mode,
-            num_heads=num_heads,      # These go through **kwargs
-            qkv_bias=qkv_bias,
-            qk_scale=qk_scale,
-            attn_drop=attn_drop,
-            proj_drop=proj_drop
-        )
+        super().__init__(d_model, num_heads=num_heads, qkv_bias=qkv_bias, 
+                     qk_scale=qk_scale, attn_drop=attn_drop, proj_drop=proj_drop)
         
         self.d_model = d_model
         self.num_heads = num_heads
