@@ -1615,3 +1615,106 @@ class BCAM_ScaleAdaptive(BCAM_SingleOutput):
             weighted_fused = self.w_rgb * rgb_final + self.w_thermal * thermal_final
         
         return weighted_fused
+
+class BCAM_LightweightSelf(BCAM):
+    """
+    BCAM with lightweight self-attention before cross-attention.
+    
+    Architecture:
+    1. Intra-modal self-attention (depthwise conv) refines each modality
+    2. Cross-attention (standard BCAM) fuses refined modalities
+    
+    This implements an encoder-decoder pattern:
+    - Encoder: Self-attention within RGB and Thermal separately
+    - Decoder: Cross-attention between modalities
+    
+    Args:
+        d_model (int): Channel dimension (e.g., 1024 for P5, 512 for P4)
+        num_heads (int): Number of attention heads for cross-attention
+        qkv_bias (bool): Whether to use bias in Q, K, V projections
+        qk_scale (float): Scale factor for attention scores
+        attn_drop (float): Dropout rate for attention weights
+        proj_drop (float): Dropout rate for output projection
+    
+    Returns:
+        tuple: (rgb_fea, thermal_fea, fused_fea) - same as standard BCAM
+    """
+    
+    def __init__(self, d_model, num_heads=8, qkv_bias=False, qk_scale=None, 
+                 attn_drop=0., proj_drop=0.):
+        # Initialize parent BCAM (cross-attention)
+        super().__init__(d_model, num_heads, qkv_bias, qk_scale, attn_drop, proj_drop)
+        
+        # === Lightweight Self-Attention Modules ===
+        # RGB intra-modal refinement
+        self.rgb_self_refine = nn.Sequential(
+            # Depthwise convolution: each channel processes independently
+            nn.Conv2d(d_model, d_model, kernel_size=3, padding=1, 
+                      groups=d_model, bias=False),
+            nn.BatchNorm2d(d_model),
+            nn.ReLU(inplace=True),
+            # Pointwise convolution: mix information across channels
+            nn.Conv2d(d_model, d_model, kernel_size=1, bias=False),
+            nn.BatchNorm2d(d_model),
+            nn.Sigmoid()  # Output as attention mask [0, 1]
+        )
+        
+        # Thermal intra-modal refinement (same structure)
+        self.thermal_self_refine = nn.Sequential(
+            nn.Conv2d(d_model, d_model, kernel_size=3, padding=1, 
+                      groups=d_model, bias=False),
+            nn.BatchNorm2d(d_model),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(d_model, d_model, kernel_size=1, bias=False),
+            nn.BatchNorm2d(d_model),
+            nn.Sigmoid()
+        )
+        
+        # Initialize self-attention weights (important for training stability)
+        self._init_self_attention_weights()
+    
+    def _init_self_attention_weights(self):
+        """Initialize self-attention modules with small weights."""
+        for m in [self.rgb_self_refine, self.thermal_self_refine]:
+            for layer in m.modules():
+                if isinstance(layer, nn.Conv2d):
+                    # Small initialization so self-attention starts weak
+                    nn.init.kaiming_normal_(layer.weight, mode='fan_out', nonlinearity='relu')
+                    if layer.weight.shape[1] == 1:  # Depthwise conv
+                        layer.weight.data *= 0.1  # Make depthwise even weaker initially
+                elif isinstance(layer, nn.BatchNorm2d):
+                    nn.init.constant_(layer.weight, 1)
+                    nn.init.constant_(layer.bias, 0)
+    
+    def forward(self, x):
+        """
+        Forward pass with self-attention followed by cross-attention.
+        
+        Args:
+            x (tuple): (rgb_fea, thermal_fea)
+                rgb_fea: [B, C, H, W] RGB features
+                thermal_fea: [B, C, H, W] Thermal features
+        
+        Returns:
+            tuple: (rgb_out, thermal_out, fused_out)
+                rgb_out: [B, C, H, W] RGB after self+cross attention
+                thermal_out: [B, C, H, W] Thermal after self+cross attention  
+                fused_out: [B, C, H, W] Fused output (rgb_out + thermal_out)
+        """
+        rgb_fea, thermal_fea = x[0], x[1]
+        
+        # === STAGE 1: Intra-Modal Self-Attention (Encoder) ===
+        # RGB self-attention: suppress noisy regions, enhance coherent regions
+        rgb_mask = self.rgb_self_refine(rgb_fea)  # [B, C, H, W], values in [0, 1]
+        rgb_refined = rgb_fea * rgb_mask + rgb_fea  # Gated residual connection
+        
+        # Thermal self-attention: same process for thermal modality
+        thermal_mask = self.thermal_self_refine(thermal_fea)
+        thermal_refined = thermal_fea * thermal_mask + thermal_fea
+        
+        # === STAGE 2: Inter-Modal Cross-Attention (Decoder) ===
+        # Use parent BCAM's cross-attention on refined features
+        # This returns (rgb_attended, thermal_attended, fused)
+        rgb_out, thermal_out, fused_out = super().forward((rgb_refined, thermal_refined))
+        
+        return rgb_out, thermal_out, fused_out

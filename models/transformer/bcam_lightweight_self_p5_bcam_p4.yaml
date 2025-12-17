@@ -1,0 +1,91 @@
+# BCAM with Lightweight Self-Attention at P5, Standard BCAM at P4
+# Baseline: 77.5 mAP (P5 BCAM + P4 BCAM)
+# Test: Does self-attention at P5 improve performance?
+
+nc: 3 # Number of classes
+depth_multiple: 1.00
+width_multiple: 1.00
+
+anchors:
+  - [10, 13, 16, 30, 33, 23] # P3/8
+  - [30, 61, 62, 45, 59, 119] # P4/16
+  - [116, 90, 156, 198, 373, 326] # P5/32
+
+backbone: [
+    ######### Dual Streams (0-19) #############
+
+    # === RGB Stream: Layers 0-9 ===
+    [-1, 1, Focus, [64, 3]], # 0: Focus (640->320, 3->64)
+    [-1, 1, Conv, [128, 3, 2]], # 1: Downsample (320->160)
+    [-1, 3, C3, [128]], # 2: C3 block
+    [-1, 1, Conv, [256, 3, 2]], # 3: Downsample (160->80)
+    [-1, 9, C3, [256]], # 4: C3 block <- RGB P3 (80x80x256)
+    [-1, 1, Conv, [512, 3, 2]], # 5: Downsample (80->40)
+    [-1, 9, C3, [512]], # 6: C3 block <- RGB P4 (40x40x512)
+    [-1, 1, Conv, [1024, 3, 2]], # 7: Downsample (40->20)
+    [-1, 1, SPP, [1024, [5, 9, 13]]], # 8: SPP block
+    [-1, 3, C3, [1024, False]], # 9: C3 block <- RGB P5 (20x20x1024)
+
+    # === Thermal Stream: Layers 10-19 ===
+    [-4, 1, Focus, [64, 3]], # 10: Focus (reuse input from layer -4)
+    [-1, 1, Conv, [128, 3, 2]], # 11: Downsample
+    [-1, 3, C3, [128]], # 12: C3 block
+    [-1, 1, Conv, [256, 3, 2]], # 13: Downsample
+    [-1, 9, C3, [256]], # 14: C3 block <- Thermal P3 (80x80x256)
+    [-1, 1, Conv, [512, 3, 2]], # 15: Downsample
+    [-1, 9, C3, [512]], # 16: C3 block <- Thermal P4 (40x40x512)
+    [-1, 1, Conv, [1024, 3, 2]], # 17: Downsample
+    [-1, 1, SPP, [1024, [5, 9, 13]]], # 18: SPP block
+    [-1, 3, C3, [1024, False]], # 19: C3 block <- Thermal P5 (20x20x1024)
+
+    ######### Fusion Modules #############
+
+    # === P5 Fusion: BCAM with Lightweight Self-Attention (NEW!) ===
+    [[9, 19], 1, BCAM_LightweightSelf, [1024]], # 20: P5 fusion
+    # Input: RGB P5 (layer 9) + Thermal P5 (layer 19)
+    # Output: (rgb_p5, thermal_p5, fused_p5) - we use fused_p5[2]
+
+    # === P4 Fusion: Standard BCAM (BASELINE) ===
+    [[6, 16], 1, BCAM, [512]], # 21: P4 fusion
+    # Input: RGB P4 (layer 6) + Thermal P4 (layer 16)
+    # Output: (rgb_p4, thermal_p4, fused_p4) - we use fused_p4[2]
+
+    # === P3 Fusion: Simple Concatenation (NO ATTENTION) ===
+    [[4, 14], 1, Concat, [1]], # 22: P3 concat (channel dim)
+    [-1, 1, Conv, [256, 1, 1]], # 23: Project concat to 256 channels
+    # Input: RGB P3 (layer 4: 256 ch) + Thermal P3 (layer 14: 256 ch)
+    # After concat: 512 channels -> project to 256
+  ]
+
+head: [
+    ######### FPN Neck + Detection Heads #############
+
+    # === Upsample Path: P5 -> P4 -> P3 ===
+
+    # P5 processing
+    [20, 1, Conv, [512, 1, 1]], # 24: Project P5 1024->512
+    [-1, 1, nn.Upsample, [None, 2, "nearest"]], # 25: Upsample 2x (20->40)
+    [[-1, 21], 1, Concat, [1]], # 26: Concat P5_up + P4_fused
+    [-1, 3, C3, [512, False]], # 27: Process P4 (40x40x512)
+
+    # P4 processing
+    [-1, 1, Conv, [256, 1, 1]], # 28: Project P4 512->256
+    [-1, 1, nn.Upsample, [None, 2, "nearest"]], # 29: Upsample 2x (40->80)
+    [[-1, 23], 1, Concat, [1]], # 30: Concat P4_up + P3_fused
+    [-1, 3, C3, [256, False]], # 31: Process P3 (80x80x256)
+
+    # === Downsample Path: P3 -> P4 -> P5 ===
+
+    # P3 -> P4
+    [-1, 1, Conv, [256, 3, 2]], # 32: Downsample (80->40)
+    [[-1, 27], 1, Concat, [1]], # 33: Concat P3_down + P4_processed
+    [-1, 3, C3, [512, False]], # 34: Process P4 (40x40x512)
+
+    # P4 -> P5
+    [-1, 1, Conv, [512, 3, 2]], # 35: Downsample (40->20)
+    [[-1, 24], 1, Concat, [1]], # 36: Concat P4_down + P5_processed
+    [-1, 3, C3, [1024, False]], # 37: Process P5 (20x20x1024)
+
+    # === Detection Heads ===
+    [[31, 34, 37], 1, Detect, [nc, anchors]], # 38: Detect at P3, P4, P5
+  ]
