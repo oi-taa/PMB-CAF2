@@ -1570,13 +1570,31 @@ if __name__ == '__main__':
     # Resume
     wandb_run = check_wandb_resume(opt)
     if opt.resume and not wandb_run:  # resume an interrupted run
-        ckpt = opt.resume if isinstance(opt.resume, str) else get_latest_run()  # specified or most recent path
-        assert os.path.isfile(ckpt), 'ERROR: --resume checkpoint does not exist'
+        # If --resume is a path, use it. Otherwise use --weights as checkpoint
+        if isinstance(opt.resume, str):
+            ckpt = opt.resume
+        elif opt.weights and opt.weights.endswith('.pt'):
+            ckpt = opt.weights  # ✅ USE --weights AS CHECKPOINT
+        else:
+            ckpt = get_latest_run()
+        
+        assert os.path.isfile(ckpt), f'ERROR: --resume checkpoint does not exist: {ckpt}'
         apriori = opt.global_rank, opt.local_rank
+        
+        # Save CLI args that should override saved config
+        cli_epochs = opt.epochs
+        cli_patience = opt.patience
+        
         with open(Path(ckpt).parent.parent / 'opt.yaml') as f:
             opt = argparse.Namespace(**yaml.safe_load(f))  # replace
+        
         opt.cfg, opt.weights, opt.resume, opt.batch_size, opt.global_rank, opt.local_rank = \
             '', ckpt, True, opt.total_batch_size, *apriori  # reinstate
+        
+        # Restore CLI overrides
+        opt.epochs = cli_epochs  # ✅ USE NEW EPOCH TARGET
+        opt.patience = cli_patience
+        
         logger.info('Resuming training from %s' % ckpt)
     else:
         # opt.hyp = opt.hyp or ('hyp.finetune.yaml' if opt.weights else 'hyp.scratch.yaml')
