@@ -234,7 +234,84 @@ class Expand(nn.Module):
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+class SCP_Enhanced_Upsample(nn.Module):
+    """
+    Spatial-aware SCP with per-location confidence
+    """
+    
+    def __init__(self, p5_channels=1024, ctx_channels=64, scale_factor=2, mode='nearest'):
+        super().__init__()
+        self.scale_factor = scale_factor
+        self.mode = mode
+        
+        # Spatial confidence network (NOT global pooling!)
+        self.confidence_net = nn.Sequential(
+            nn.Conv2d(p5_channels, p5_channels // 4, 3, padding=1),
+            nn.GroupNorm(32, p5_channels // 4),
+            nn.GELU(),
+            nn.Conv2d(p5_channels // 4, p5_channels // 8, 3, padding=1),
+            nn.GroupNorm(16, p5_channels // 8),
+            nn.GELU(),
+            nn.Conv2d(p5_channels // 8, 1, 1),
+            nn.Sigmoid()
+        )
+        
+        # Initialize to start at ~0.4 (not 0.12!)
+        self.confidence_net[-2].bias.data.fill_(-0.4)
+        
+        # Learned upsampling
+        self.upsample = nn.Sequential(
+            nn.ConvTranspose2d(ctx_channels, ctx_channels, 4, stride=2, padding=1, bias=False),
+            nn.GroupNorm(8, ctx_channels),
+            nn.ReLU(inplace=True)
+        )
+        
+        # Refinement
+        self.refine = nn.Sequential(
+            nn.Conv2d(ctx_channels, ctx_channels, 3, padding=1),
+            nn.GroupNorm(8, ctx_channels),
+            nn.ReLU(inplace=True)
+        )
+        
+        self._last_confidence = None
+    
+    def forward(self, x):
+        if isinstance(x, (list, tuple)) and len(x) == 2:
+            p5_fused, p5_ctx_proj = x
+        else:
+            raise ValueError("SCP_Enhanced_Upsample expects [p5_fused, p5_ctx_proj]")
+        
+        # Spatial confidence map (KEY CHANGE!)
+        gamma = self.confidence_net(p5_fused)  # [B, 1, H5, W5] not [B, 1, 1, 1]!
+        self._last_confidence = gamma.detach()
+        
+        # Upsample confidence to P4 resolution
+        gamma_up = F.interpolate(gamma, scale_factor=self.scale_factor, 
+                                mode='bilinear', align_corners=False)
+        
+        # Upsample context
+        ctx_up = self.upsample(p5_ctx_proj)
+        
+        # Apply spatial weighting
+        weighted_ctx = gamma_up * ctx_up
+        
+        # Refine
+        weighted_ctx = self.refine(weighted_ctx)
+        
+        return weighted_ctx
+    
+    def get_confidence_stats(self):
+        if self._last_confidence is None:
+            return None
+        c = self._last_confidence
+        return {
+            'mean_confidence': float(c.mean().item()),
+            'std_confidence': float(c.std().item()),
+            'min_confidence': float(c.min().item()),
+            'max_confidence': float(c.max().item())
+        }
 
+'''
 class SCP_Enhanced_Upsample(nn.Module):
     """
     SCP module that:
@@ -321,7 +398,7 @@ class SCP_Enhanced_Upsample(nn.Module):
             'min_confidence': float(c.min().item()),
             'max_confidence': float(c.max().item())
         }
-
+'''
     
 class Concat(nn.Module):
     # Concatenate a list of tensors along dimension
