@@ -239,7 +239,7 @@ class SCP_Enhanced_Upsample(nn.Module):
     Spatial-aware SCP with per-location confidence
     """
     
-    def __init__(self, p5_channels=1024, ctx_channels=64, scale_factor=2, mode='nearest'):
+    def __init__(self, p5_channels=1024, ctx_channels=64, scale_factor=2, mode='nearest', **kwargs):
         super().__init__()
         self.scale_factor = scale_factor
         self.mode = mode
