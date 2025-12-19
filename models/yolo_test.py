@@ -747,6 +747,267 @@ def parse_model(d, ch):  # model_dict, input_channels(3)
                     n = 1
         elif m is nn.BatchNorm2d:
             args = [ch[f]]
+        
+        elif m is Add:
+            c2 = ch[f[0]]
+            args = [c2]
+        
+        elif m is Add2:
+            c2 = ch[f[0]]
+            args = [c2, args[1]]
+        
+        elif m is GPT:
+            c2 = ch[f[0]]
+            args = [c2]
+        
+        elif m is BCAM:
+            print(f"Layer {i}: BCAM with f={f}, len(ch)={len(ch)}")
+            d_model = ch[f[0]]        # 1024  (input per stream)
+            c2 = 3 * d_model          # 3072  (output concat of 3)
+            args = [d_model] + args[1:] if len(args) > 1 else [d_model]
+        
+        elif m is BCAM_SingleOutput:
+            if isinstance(f, list):
+                f_idx = f[0]
+            else:
+                f_idx = f
+            
+            if f_idx >= len(ch):
+                raise IndexError(f"BCAM_SingleOutput: f_idx={f_idx} >= len(ch)={len(ch)}")
+            
+            c2 = ch[f_idx]  # Output channels = input channels
+            args = [c2] + args[1:] if len(args) > 1 else [c2, 'fused']
+        
+        elif m is BCAM_TrueSelfAttention_SingleOutput:
+            if isinstance(f, list):
+                f_idx = f[0]
+            else:
+                f_idx = f
+            
+            if f_idx >= len(ch):
+                raise IndexError(f"BCAM_TrueSelfAttention_SingleOutput: f_idx={f_idx} >= len(ch)={len(ch)}")
+            
+            c2 = ch[f_idx]  # Output channels = input channels
+            args = [c2] + args[1:] if len(args) > 1 else [c2]
+        
+        elif m is BCAM_TrueSelfAttention_ModalityGated:
+            if isinstance(f, list):
+                f_idx = f[0]
+            else:
+                f_idx = f
+            
+            if f_idx >= len(ch):
+                raise IndexError(f"BCAM_TrueSelfAttention_ModalityGated: f_idx={f_idx} >= len(ch)={len(ch)}")
+            
+            c2 = ch[f_idx]  # Output channels = input channels
+            args = [c2] + args[1:] if len(args) > 1 else [c2]
+        
+        elif m is SemanticScale:
+            c1 = ch[f]
+            c2 = c1  # Output channels = input channels
+            # args from YAML: [channels, scale] but channels already from ch
+            # So just pass scale (args should already have it)
+            args = [c1] + args[1:] if len(args) > 1 else [c1, 0.3]
+        
+        elif m is Progressive_Projection:
+            c2 = ch[f[0]]  # Output channels match input
+            d_model = args[0] if len(args) > 0 else c2
+            coarse_channels = args[1] if len(args) > 1 else c2
+            m_ = m(d_model, coarse_channels)
+        
+        elif m is Progressive_SimpleAdd:
+            c2 = ch[f[0]]
+            d_model = args[0] if len(args) > 0 else c2
+            coarse_channels = args[1] if len(args) > 1 else c2
+            m_ = m(d_model, 4, 0.1, 8, 8, coarse_channels)
+        
+        elif m is UCAM:
+            c2 = ch[f[0]]
+            m_ = m(c2, *args[1:])
+            # Disable internal pos - will use external pos from orchestration
+            m_.rgb_pos_embed = None
+            m_.thermal_pos_embed = None
+        
+        elif m is BCAM_Progressive:
+            c2 = ch[f[0]]
+            if len(args) >= 2:
+                d_model, coarse_channels = args[0], args[1] 
+                args = [d_model, 4, 0.1, 8, 8, coarse_channels]
+            m_ = m(*args)
+            # Disable internal pos - will use external pos from orchestration  
+            m_.rgb_pos_embed = None
+            m_.thermal_pos_embed = None
+        
+        elif m is Concat:
+            c2 = sum([ch[x] for x in f])
+        
+        elif m is BCAM_ScaleAdaptive:
+            if isinstance(f, list):
+                f_idx = f[0]
+            else:
+                f_idx = f
+            
+            if f_idx >= len(ch):
+                raise IndexError(f"BCAM_ScaleAdaptive: f_idx={f_idx} >= len(ch)={len(ch)}")
+            
+            d_model = ch[f_idx]  # Get d_model from channel list (NOT from args)
+            c2 = d_model
+            
+            # Parse scale from args
+            scale = None
+            learnable = False
+            
+            for arg in args:
+                if isinstance(arg, str) and arg in ['P3', 'P4', 'P5']:
+                    scale = arg
+                elif isinstance(arg, bool):
+                    learnable = arg
+            
+            if scale is None:
+                raise ValueError(f"BCAM_ScaleAdaptive requires scale ('P3'/'P4'/'P5'), got {args}")
+            
+            m_ = BCAM_ScaleAdaptive(d_model, scale=scale, learnable_weights=learnable)
+
+        elif m is ScaleAdaptiveFusion:
+            if isinstance(f, list):
+                f_idx = f[0]
+            else:
+                f_idx = f
+            
+            if f_idx >= len(ch):
+                raise IndexError(f"ScaleAdaptiveFusion: f_idx={f_idx} >= len(ch)={len(ch)}")
+            
+            channels = ch[f_idx]  # Get channels from channel list (NOT from args)
+            c2 = channels
+            
+            # Parse w_thermal from args
+            w_thermal = 0.6  # default
+            learnable = False
+            
+            for arg in args:
+                if isinstance(arg, (int, float)) and 0 < arg <= 1:
+                    w_thermal = float(arg)
+                elif isinstance(arg, bool):
+                    learnable = arg
+            
+            m_ = ScaleAdaptiveFusion(channels, w_thermal=w_thermal, learnable=learnable)
+        
+        elif m is SCP_Enhanced_Upsample:
+            print(f"DEBUG: SCP_Enhanced_Upsample module with f={f}")
+            if isinstance(f, list) and len(f) == 2:
+                # f = [p5_fused_idx, p5_ctx_proj_idx]
+                p5_channels = ch[f[0]]      # Should be 1024 for P5 fused
+                ctx_channels = ch[f[1]]     # Should be 64 for projected context
+                c2 = ctx_channels           # Output channels same as context channels
+                
+                # args[0] should be ctx_channels (64)
+                if len(args) > 0:
+                    ctx_channels = args[0]
+                    c2 = ctx_channels
+                
+                m_ = SCP_Enhanced_Upsample(
+                    p5_channels=p5_channels,
+                    ctx_channels=ctx_channels,
+                    hidden=256,
+                    scale_factor=2,
+                    mode='nearest'
+                )
+            else:
+                raise ValueError("SCP_Enhanced_Upsample requires two inputs: [p5_fused, p5_ctx_proj]")
+        
+        elif m is Detect:
+            args.append([ch[x] for x in f])
+            if isinstance(args[1], int):  # number of anchors
+                args[1] = [list(range(args[1] * 2))] * len(f)
+        
+        elif m is nn.AdaptiveAvgPool2d:
+            if isinstance(f, list):
+                f_idx = f[0]
+            else:
+                f_idx = f
+            c2 = ch[f_idx]  # Output channels same as input
+            # args[0] should be the target size like [20] or 20
+            target_size = args[0] if len(args) > 0 else 1
+            m_ = nn.AdaptiveAvgPool2d(target_size)
+        
+        elif m is Contract:
+            c2 = ch[f] * args[0] ** 2
+        
+        elif m is Expand:
+            c2 = ch[f] // args[0] ** 2
+        
+        else:
+            c2 = ch[f]
+
+        if 'm_' not in locals():
+            m_ = nn.Sequential(*[m(*args) for _ in range(n)]) if n > 1 else m(*args)  # module
+            
+        t = str(m)[8:-2].replace('__main__.', '')  # module type
+        np = sum([x.numel() for x in m_.parameters()])  # number params
+        m_.i, m_.f, m_.type, m_.np = i, f, t, np  # attach index, 'from' index, type, number params
+        logger.info('%3s%18s%3s%10.0f  %-40s%-30s' % (i, f, n, np, t, args))  # print
+        save.extend(x % i for x in ([f] if isinstance(f, int) else f) if x != -1)  # append to savelist
+        layers.append(m_)
+        if i == 0:
+            ch = []
+        ch.append(c2)
+        
+        # Clear m_ for next iteration
+        if 'm_' in locals():
+            del m_
+    return nn.Sequential(*layers), sorted(save)
+'''
+def parse_model(d, ch):  # model_dict, input_channels(3)
+    logger.info('\n%3s%18s%3s%10s  %-40s%-30s' % ('', 'from', 'n', 'params', 'module', 'arguments'))
+    anchors, nc, gd, gw = d['anchors'], d['nc'], d['depth_multiple'], d['width_multiple']
+    na = (len(anchors[0]) // 2) if isinstance(anchors, list) else anchors  # number of anchors
+    no = na * (nc + 5)  # number of outputs = anchors * (classes + 5)
+
+    layers, save, c2 = [], [], ch[-1]  # layers, savelist, ch out
+    
+    for i, (f, n, m, args) in enumerate(d['backbone'] + d['head']):  # from, number, module, args
+        
+        
+        m = eval(m) if isinstance(m, str) else m  # eval strings
+        for j, a in enumerate(args):
+            try:
+                args[j] = eval(a) if isinstance(a, str) else a  # eval strings
+            except:
+                pass
+
+        n = max(round(n * gd), 1) if n > 1 else n  # depth gain
+        
+        if m in [Conv, GhostConv, Bottleneck, GhostBottleneck, SPP, DWConv, MixConv2d, Focus, CrossConv, BottleneckCSP,
+                 C3, C3TR]:
+
+            if m is Focus:
+                c1, c2 = 3, args[0]
+                if c2 != no:  # if not output
+                    c2 = make_divisible(c2 * gw, 8)
+                args = [c1, c2, *args[1:]]
+            else:
+                if isinstance(f, list):
+                    if f[0] >= len(ch):
+                        print(f"ERROR: f[0]={f[0]} >= len(ch)={len(ch)}")
+                    f_idx = f[0]
+                else:
+                    f_idx = f
+                    
+                if f_idx >= len(ch):
+                    print(f"ERROR: Trying to access ch[{f_idx}] but ch length is {len(ch)}")
+                    print(f"ERROR: ch = {ch}")
+                    raise IndexError(f"Index {f_idx} out of range for ch list of length {len(ch)}")
+                    
+                c1, c2 = ch[f_idx], args[0]
+                if c2 != no:  # if not output
+                    c2 = make_divisible(c2 * gw, 8)
+
+                args = [c1, c2, *args[1:]]
+                if m in [BottleneckCSP, C3, C3TR]:
+                    args.insert(2, n)  # number of repeats
+                    n = 1
+        elif m is nn.BatchNorm2d:
+            args = [ch[f]]
         elif m is Add:
             c2 = ch[f[0]]
             args = [c2]
@@ -792,14 +1053,6 @@ def parse_model(d, ch):  # model_dict, input_channels(3)
         
             # Create module with d_model from channel list
             m_ = BCAM_TrueSelfAttention_SingleOutput(c2)
-        elif m is BCAM_TrueSelfAttention_ModalityGated:
-            c1, c2 = ch[f[0]], args[0]  # f is a list [rgb_idx, thermal_idx]
-            if c2 != no_c:
-                c2 = make_divisible(c2 * gw, 8)
-            args = [c2, *args[1:]]  # [d_model, num_heads]
-        elif m is SemanticScale:
-            c1, c2 = ch[f], args[0]
-            args = [c1, *args[1:]]  # [channels, scale]
         
         elif m is Progressive_SimpleAdd:
             c2 = ch[f[0]]
@@ -935,6 +1188,7 @@ def parse_model(d, ch):  # model_dict, input_channels(3)
         if 'm_' in locals():
             del m_
     return nn.Sequential(*layers), sorted(save)
+'''
 '''
 def parse_model(d, ch):  # model_dict, input_channels(3)
     logger.info('\n%3s%18s%3s%10s  %-40s%-30s' % ('', 'from', 'n', 'params', 'module', 'arguments'))
