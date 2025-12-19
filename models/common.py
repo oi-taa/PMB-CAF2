@@ -1818,3 +1818,202 @@ class BCAM_TrueSelfAttention_SingleOutput(BCAM_SingleOutput):
         fused = super().forward((rgb_refined_spatial, thermal_refined_spatial))
         
         return fused
+
+class ModalityConfidenceGate(nn.Module):
+    """
+    Learns independent scalar confidence per modality.
+    Does NOT normalize (allows both to be low).
+    """
+    def __init__(self, d_model, hidden=256):
+        super().__init__()
+        
+        # RGB confidence network
+        self.rgb_conf = nn.Sequential(
+            nn.AdaptiveAvgPool2d(1),
+            nn.Flatten(),
+            nn.Linear(d_model, hidden),
+            nn.ReLU(inplace=True),
+            nn.Linear(hidden, 1),
+            nn.Sigmoid()  # [0, 1]
+        )
+        
+        # Thermal confidence network
+        self.thermal_conf = nn.Sequential(
+            nn.AdaptiveAvgPool2d(1),
+            nn.Flatten(),
+            nn.Linear(d_model, hidden),
+            nn.ReLU(inplace=True),
+            nn.Linear(hidden, 1),
+            nn.Sigmoid()  # [0, 1]
+        )
+        
+        # Initialize to high confidence (0.7-0.8 range)
+        # Sigmoid(0.8) ≈ 0.69, Sigmoid(1.0) ≈ 0.73
+        for module in [self.rgb_conf, self.thermal_conf]:
+            nn.init.constant_(module[-2].bias, 0.8)
+    
+    def forward(self, rgb_fea, thermal_fea):
+        """
+        Args:
+            rgb_fea: [B, C, H, W]
+            thermal_fea: [B, C, H, W]
+        Returns:
+            rgb_weighted: [B, C, H, W]
+            thermal_weighted: [B, C, H, W]
+        """
+        # Compute independent confidences
+        rgb_c = self.rgb_conf(rgb_fea)      # [B, 1]
+        thermal_c = self.thermal_conf(thermal_fea)  # [B, 1]
+        
+        # NO NORMALIZATION! Use confidences directly
+        rgb_w = rgb_c.view(-1, 1, 1, 1)      # [B, 1, 1, 1]
+        thermal_w = thermal_c.view(-1, 1, 1, 1)
+        
+        # Apply weights
+        rgb_weighted = rgb_w * rgb_fea
+        thermal_weighted = thermal_w * thermal_fea
+        
+        return rgb_weighted, thermal_weighted
+
+class ModalityConfidenceGate(nn.Module):
+    """
+    Learns independent scalar confidence per modality.
+    Does NOT normalize (allows both to be low).
+    """
+    def __init__(self, d_model, hidden=256):
+        super().__init__()
+        
+        # RGB confidence network
+        self.rgb_conf = nn.Sequential(
+            nn.AdaptiveAvgPool2d(1),
+            nn.Flatten(),
+            nn.Linear(d_model, hidden),
+            nn.ReLU(inplace=True),
+            nn.Linear(hidden, 1),
+            nn.Sigmoid()  # [0, 1]
+        )
+        
+        # Thermal confidence network
+        self.thermal_conf = nn.Sequential(
+            nn.AdaptiveAvgPool2d(1),
+            nn.Flatten(),
+            nn.Linear(d_model, hidden),
+            nn.ReLU(inplace=True),
+            nn.Linear(hidden, 1),
+            nn.Sigmoid()  # [0, 1]
+        )
+        
+        # Initialize to high confidence (0.7-0.8 range)
+        # Sigmoid(0.8) ≈ 0.69, Sigmoid(1.0) ≈ 0.73
+        for module in [self.rgb_conf, self.thermal_conf]:
+            nn.init.constant_(module[-2].bias, 0.8)
+    
+    def forward(self, rgb_fea, thermal_fea):
+        """
+        Args:
+            rgb_fea: [B, C, H, W]
+            thermal_fea: [B, C, H, W]
+        Returns:
+            rgb_weighted: [B, C, H, W]
+            thermal_weighted: [B, C, H, W]
+        """
+        # Compute independent confidences
+        rgb_c = self.rgb_conf(rgb_fea)      # [B, 1]
+        thermal_c = self.thermal_conf(thermal_fea)  # [B, 1]
+        
+        # NO NORMALIZATION! Use confidences directly
+        rgb_w = rgb_c.view(-1, 1, 1, 1)      # [B, 1, 1, 1]
+        thermal_w = thermal_c.view(-1, 1, 1, 1)
+        
+        # Apply weights
+        rgb_weighted = rgb_w * rgb_fea
+        thermal_weighted = thermal_w * thermal_fea
+        
+        return rgb_weighted, thermal_weighted
+
+
+class BCAM_TrueSelfAttention_ModalityGated(BCAM_TrueSelfAttention_SingleOutput):
+    """
+    BCAM with self-attention + modality confidence gating.
+    
+    Flow:
+    1. Self-attention cleans each modality (encoder)
+    2. Modality gating applies independent confidence weights
+    3. Cross-attention fuses weighted modalities (decoder)
+    """
+    
+    def __init__(self, d_model, num_heads=8):
+        super().__init__(d_model, num_heads)
+        
+        # Add modality confidence gate
+        self.modality_gate = ModalityConfidenceGate(d_model, hidden=256)
+    
+    def forward(self, x):
+        rgb_fea, thermal_fea = x[0], x[1]
+        bs, c, h, w = rgb_fea.shape
+        
+        # ============================================================
+        # ENCODER: Self-attention
+        # ============================================================
+        rgb_tokens = rgb_fea.flatten(2).transpose(1, 2)
+        thermal_tokens = thermal_fea.flatten(2).transpose(1, 2)
+        
+        # RGB self-attention
+        rgb_normed = self.rgb_self_norm(rgb_tokens)
+        rgb_self_q = self.rgb_self_q(rgb_normed)
+        rgb_self_k = self.rgb_self_k(rgb_normed)
+        rgb_self_v = self.rgb_self_v(rgb_normed)
+        rgb_self_attn = self._multi_head_self_attention(rgb_self_q, rgb_self_k, rgb_self_v)
+        rgb_self_attn = self.rgb_self_proj(rgb_self_attn)
+        rgb_self_attn = self.self_proj_drop(rgb_self_attn)
+        rgb_refined = rgb_tokens + self.rgb_self_scale * rgb_self_attn
+        
+        # Thermal self-attention
+        thermal_normed = self.thermal_self_norm(thermal_tokens)
+        thermal_self_q = self.thermal_self_q(thermal_normed)
+        thermal_self_k = self.thermal_self_k(thermal_normed)
+        thermal_self_v = self.thermal_self_v(thermal_normed)
+        thermal_self_attn = self._multi_head_self_attention(thermal_self_q, thermal_self_k, thermal_self_v)
+        thermal_self_attn = self.thermal_self_proj(thermal_self_attn)
+        thermal_self_attn = self.self_proj_drop(thermal_self_attn)
+        thermal_refined = thermal_tokens + self.thermal_self_scale * thermal_self_attn
+        
+        # Convert back to spatial
+        rgb_refined_spatial = rgb_refined.transpose(1, 2).reshape(bs, c, h, w)
+        thermal_refined_spatial = thermal_refined.transpose(1, 2).reshape(bs, c, h, w)
+        
+        # ============================================================
+        # MODALITY GATING: Independent confidence weights
+        # ============================================================
+        rgb_gated, thermal_gated = self.modality_gate(
+            rgb_refined_spatial, 
+            thermal_refined_spatial
+        )
+        
+        # ============================================================
+        # DECODER: Cross-attention (CORRECTED super() call)
+        # ============================================================
+        # Skip to BCAM_SingleOutput to avoid double cross-attention
+        fused = super(BCAM_TrueSelfAttention_SingleOutput, self).forward(
+            (rgb_gated, thermal_gated)
+        )
+        
+        return fused
+
+class SemanticScale(nn.Module):
+    """
+    Fixed scalar scaling to control coarse semantic influence on fine scale.
+    α = 0.3 means P3 gets 30% semantic guidance, 70% fine details.
+    """
+    def __init__(self, channels, scale=0.3):
+        super().__init__()
+        self.scale = scale
+    
+    def forward(self, x):
+        """
+        Args:
+            x: [B, C, H, W] - Coarse semantic features
+        Returns:
+            [B, C, H, W] - Scaled features (×0.3)
+        """
+        return self.scale * x

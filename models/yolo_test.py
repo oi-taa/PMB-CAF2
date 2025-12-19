@@ -789,9 +789,12 @@ def parse_model(d, ch):  # model_dict, input_channels(3)
                 raise IndexError(f"BCAM_TrueSelfAttention_SingleOutput: f_idx={f_idx} >= len(ch)={len(ch)}")
             
             c2 = ch[f_idx]
-            
+        
             # Create module with d_model from channel list
             m_ = BCAM_TrueSelfAttention_SingleOutput(c2)
+        elif m is SemanticScale:
+            c1, c2 = ch[f], args[0]
+            args = [c1, *args[1:]]  # [channels, scale]
         elif m is Progressive_SimpleAdd:
             c2 = ch[f[0]]
             d_model = args[0] if len(args) > 0 else c2
