@@ -792,9 +792,15 @@ def parse_model(d, ch):  # model_dict, input_channels(3)
         
             # Create module with d_model from channel list
             m_ = BCAM_TrueSelfAttention_SingleOutput(c2)
+        elif m is BCAM_TrueSelfAttention_ModalityGated:
+            c1, c2 = ch[f[0]], args[0]  # f is a list [rgb_idx, thermal_idx]
+            if c2 != no_c:
+                c2 = make_divisible(c2 * gw, 8)
+            args = [c2, *args[1:]]  # [d_model, num_heads]
         elif m is SemanticScale:
             c1, c2 = ch[f], args[0]
             args = [c1, *args[1:]]  # [channels, scale]
+        
         elif m is Progressive_SimpleAdd:
             c2 = ch[f[0]]
             d_model = args[0] if len(args) > 0 else c2
