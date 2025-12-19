@@ -1,0 +1,89 @@
+# Fixed: Block FPN→P3 to prevent P5 context over-injection
+# Problem: P5 context reached P3 three times (SCP, FPN×2)
+# Solution: Stop FPN at P4, let PAN flow freely
+
+nc: 3
+depth_multiple: 1.00
+width_multiple: 1.00
+
+anchors:
+  - [10,13, 16,30, 33,23]
+  - [30,61, 62,45, 59,119]  
+  - [116,90, 156,198, 373,326]
+
+backbone:
+  [
+    ######### Dual Streams (0-19) #############
+    [-1, 1, Focus, [64, 3]],        # 0
+    [-1, 1, Conv, [128, 3, 2]],     # 1
+    [-1, 3, C3, [128]],             # 2
+    [-1, 1, Conv, [256, 3, 2]],     # 3
+    [-1, 9, C3, [256]],             # 4  # RGB P3
+    [-1, 1, Conv, [512, 3, 2]],     # 5
+    [-1, 9, C3, [512]],             # 6  # RGB P4
+    [-1, 1, Conv, [1024, 3, 2]],    # 7
+    [-1, 1, SPP, [1024, [5, 9, 13]]], # 8
+    [-1, 3, C3, [1024, False]],     # 9  # RGB P5
+
+    [-4, 1, Focus, [64, 3]],        # 10
+    [-1, 1, Conv, [128, 3, 2]],     # 11
+    [-1, 3, C3, [128]],             # 12
+    [-1, 1, Conv, [256, 3, 2]],     # 13
+    [-1, 9, C3, [256]],             # 14 # Thermal P3
+    [-1, 1, Conv, [512, 3, 2]],     # 15
+    [-1, 9, C3, [512]],             # 16 # Thermal P4
+    [-1, 1, Conv, [1024, 3, 2]],    # 17
+    [-1, 1, SPP, [1024, [5, 9, 13]]], # 18
+    [-1, 3, C3, [1024, False]],     # 19 # Thermal P5
+
+    ######### Progressive Fusion (P5→P4 only) #############
+    
+    # P5: Self-attention + Cross-attention
+    [[9,19], 1, BCAM_TrueSelfAttention_SingleOutput, [1024]], # 20
+    
+    # P5 → P4 SCP context
+    [20, 1, Conv, [64, 1, 1]],                      # 21
+    [[20, 21], 1, SCP_Enhanced_Upsample, [64]],     # 22
+    
+    # P4: Context-enhanced + Self-attention + Cross-attention
+    [[6, 22], 1, Concat, [1]],                      # 23: RGB + ctx
+    [23, 1, Conv, [512, 1, 1]],                     # 24
+    [[16, 22], 1, Concat, [1]],                     # 25: Thermal + ctx
+    [25, 1, Conv, [512, 1, 1]],                     # 26
+    [[24, 26], 1, BCAM_TrueSelfAttention_SingleOutput, [512]], # 27
+    
+    # P3: Simple concat (no SCP, will get processed in head)
+    [[4, 14], 1, Concat, [1]],                      # 28
+    [-1, 1, Conv, [256, 1, 1]],                     # 29
+  ]
+
+head:
+  [
+    ######### FPN: Top-down (STOP at P4) #############
+    
+    # P5 processing
+    [20, 1, Conv, [512, 1, 1]],                     # 30: Project P5
+    [-1, 1, nn.Upsample, [None, 2, 'nearest']],     # 31: P5 upsample
+    
+    # P4 = P5_up + P4_fused (receives P5 semantics via FPN)
+    [[31, 27], 1, Concat, [1]],                     # 32: Concat
+    [-1, 3, C3, [512, False]],                      # 33: P4 processed
+    
+    # P3 STANDALONE (NO FPN from P4 - blocks over-injection!)
+    [29, 3, C3, [256, False]],                      # 34: P3 standalone ← KEY CHANGE!
+    
+    ######### PAN: Bottom-up (KEEP intact) #############
+    
+    # P4 = P3_down + P4_processed (fine details flow UP)
+    [34, 1, Conv, [256, 3, 2]],                     # 35: P3 downsample
+    [[35, 33], 1, Concat, [1]],                     # 36: P3_down + P4
+    [-1, 3, C3, [512, False]],                      # 37: P4 final
+    
+    # P5 = P4_down + P5_projected (fine details flow UP)
+    [37, 1, Conv, [512, 3, 2]],                     # 38: P4 downsample
+    [[38, 30], 1, Concat, [1]],                     # 39: P4_down + P5
+    [-1, 3, C3, [1024, False]],                     # 40: P5 final
+    
+    # Detection heads
+    [[34, 37, 40], 1, Detect, [nc, anchors]],       # 41
+  ]
