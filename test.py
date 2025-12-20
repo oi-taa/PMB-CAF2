@@ -378,8 +378,34 @@ def test(data,
         with torch.no_grad():
             # Run model
             t = time_synchronized()
-            out, train_out = model(img_rgb, img_ir, augment=augment)  # inference and training outputs
+            output = model(img_rgb, img_ir, augment=augment)  # inference and training outputs
             t0 += time_synchronized() - t
+            if isinstance(output, tuple):
+                if len(output) == 2:
+                    # Could be (out, train_out) or (out, obj_clean)
+                    first, second = output
+                    
+                    # Check if second element is a list (train_out) or tensor (obj_clean)
+                    if isinstance(second, list):
+                        # Normal training output: (out, train_out)
+                        out = first
+                        train_out = second
+                    elif isinstance(second, torch.Tensor) and second.dim() == 4 and second.shape[1] == 1:
+                        # Objectness head output: (out, obj_clean) where obj_clean is [B, 1, H, W]
+                        out = first
+                        train_out = None  # No training outputs when using ObjectnessHead
+                    else:
+                        # Fallback: treat as (out, train_out)
+                        out = first
+                        train_out = second if isinstance(second, list) else None
+                else:
+                    # Unexpected tuple length
+                    out = output[0]
+                    train_out = None
+            else:
+                # Single output (just predictions)
+                out = output
+                train_out = None
 
             # Compute loss
             if compute_loss:
