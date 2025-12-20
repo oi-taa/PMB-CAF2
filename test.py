@@ -415,6 +415,17 @@ def test(data,
             targets[:, 2:] *= torch.Tensor([width, height, width, height]).to(device)  # to pixels
             lb = [targets[targets[:, 0] == i, 1:] for i in range(nb)] if save_hybrid else []  # for autolabelling
             t = time_synchronized()
+            # ← ADD DEBUG HERE
+            print(f"🔍 DEBUG before NMS:")
+            print(f"   type(out) = {type(out)}")
+            print(f"   isinstance(out, tuple) = {isinstance(out, tuple)}")
+            if isinstance(out, torch.Tensor):
+                print(f"   out.shape = {out.shape}")
+            elif isinstance(out, tuple):
+                print(f"   ERROR: out is TUPLE with {len(out)} elements")
+                print(f"   type(out[0]) = {type(out[0])}")
+                print(f"   Forcing unwrap...")
+                out = out[0]  # Emergency fix
             out = non_max_suppression(out, conf_thres, iou_thres, labels=lb, multi_label=True, agnostic=single_cls)
             t1 += time_synchronized() - t
 
