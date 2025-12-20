@@ -382,28 +382,34 @@ def test(data,
             t0 += time_synchronized() - t
             if isinstance(output, tuple):
                 if len(output) == 2:
-                    # Could be (out, train_out) or (out, obj_clean)
                     first, second = output
                     
-                    # Check if second element is a list (train_out) or tensor (obj_clean)
-                    if isinstance(second, list):
-                        # Normal training output: (out, train_out)
+                    # Check if second is obj_clean (tensor) or train_out (list)
+                    if isinstance(second, torch.Tensor) and second.dim() == 4 and second.shape[1] == 1:
+                        # (Detect_output, obj_clean)
+                        detect_out = first
+                        obj_clean = second
+                        
+                        # Detect itself might return tuple in eval mode
+                        if isinstance(detect_out, tuple):
+                            out = detect_out[0]  # Get concatenated predictions
+                            train_out = detect_out[1] if len(detect_out) > 1 else None
+                        else:
+                            out = detect_out
+                            train_out = None
+                            
+                    elif isinstance(second, list):
+                        # (out, train_out) - normal training
                         out = first
                         train_out = second
-                    elif isinstance(second, torch.Tensor) and second.dim() == 4 and second.shape[1] == 1:
-                        # Objectness head output: (out, obj_clean) where obj_clean is [B, 1, H, W]
-                        out = first
-                        train_out = None  # No training outputs when using ObjectnessHead
                     else:
-                        # Fallback: treat as (out, train_out)
+                        # Fallback
                         out = first
-                        train_out = second if isinstance(second, list) else None
+                        train_out = None
                 else:
-                    # Unexpected tuple length
                     out = output[0]
                     train_out = None
             else:
-                # Single output (just predictions)
                 out = output
                 train_out = None
 
@@ -415,17 +421,6 @@ def test(data,
             targets[:, 2:] *= torch.Tensor([width, height, width, height]).to(device)  # to pixels
             lb = [targets[targets[:, 0] == i, 1:] for i in range(nb)] if save_hybrid else []  # for autolabelling
             t = time_synchronized()
-            # ← ADD DEBUG HERE
-            print(f"🔍 DEBUG before NMS:")
-            print(f"   type(out) = {type(out)}")
-            print(f"   isinstance(out, tuple) = {isinstance(out, tuple)}")
-            if isinstance(out, torch.Tensor):
-                print(f"   out.shape = {out.shape}")
-            elif isinstance(out, tuple):
-                print(f"   ERROR: out is TUPLE with {len(out)} elements")
-                print(f"   type(out[0]) = {type(out[0])}")
-                print(f"   Forcing unwrap...")
-                out = out[0]  # Emergency fix
             out = non_max_suppression(out, conf_thres, iou_thres, labels=lb, multi_label=True, agnostic=single_cls)
             t1 += time_synchronized() - t
 
