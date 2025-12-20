@@ -111,7 +111,7 @@ class ComputeLoss:
         for k in 'na', 'nc', 'nl', 'anchors':
             setattr(self, k, getattr(det, k))
 
-    def __call__(self, p, targets):  # predictions, targets, model
+    def __call__(self, p, targets, obj_clean=None):  # predictions, targets, model
         device = targets.device
         lcls, lbox, lobj = torch.zeros(1, device=device), torch.zeros(1, device=device), torch.zeros(1, device=device)
         tcls, tbox, indices, anchors = self.build_targets(p, targets)  # targets
@@ -144,11 +144,26 @@ class ComputeLoss:
                 # Append targets to text file
                 # with open('targets.txt', 'a') as file:
                 #     [file.write('%11.5g ' * 4 % tuple(x) + '\n') for x in torch.cat((txy[i], twh[i]), 1)]
-
-            obji = self.BCEobj(pi[..., 4], tobj)
-            lobj += obji * self.balance[i]  # obj loss
+            obji_fused = self.BCEobj(pi[..., 4], tobj) 
+            if obj_clean is not None and i == 0:  # Only for P3 layer
+                # obj_clean is [B, 1, 80, 80], need to expand to anchor dimensions
+                # tobj is [B, 3, 80, 80] (batch, anchors, grid_y, grid_x)
+                obj_clean_expanded = obj_clean.expand_as(tobj)  # [B, 3, 80, 80]
+                obji_clean = self.BCEobj(obj_clean_expanded, tobj)
+                
+                # Weighted combination (50-50 split)
+                obji = 0.5 * obji_fused + 0.5 * obji_clean
+            else:
+                obji = obji_fused
+            
+            lobj += obji * self.balance[i]
+            
             if self.autobalance:
                 self.balance[i] = self.balance[i] * 0.9999 + 0.0001 / obji.detach().item()
+            '''obji = self.BCEobj(pi[..., 4], tobj)
+            lobj += obji * self.balance[i]  # obj loss
+            if self.autobalance:
+                self.balance[i] = self.balance[i] * 0.9999 + 0.0001 / obji.detach().item()'''
 
         if self.autobalance:
             self.balance = [x / self.balance[self.ssi] for x in self.balance]

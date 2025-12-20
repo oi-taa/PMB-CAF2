@@ -2084,3 +2084,27 @@ class P3_BoxRefinement(nn.Module):
         
         # Residual connection with learned scale
         return identity + self.scale * out
+
+
+class ObjectnessHead(nn.Module):
+    """
+    Lightweight objectness-only head from clean P3 features.
+    No fusion semantics, just spatial confidence.
+    """
+    def __init__(self, c):
+        super().__init__()
+        self.conv = nn.Sequential(
+            nn.Conv2d(c, c, 3, 1, 1),
+            nn.BatchNorm2d(c),
+            nn.SiLU(),
+            nn.Conv2d(c, 1, 1)  # Single channel objectness
+        )
+    
+    def forward(self, x):
+        """
+        Args:
+            x: Clean P3 features [B, 256, 80, 80]
+        Returns:
+            Objectness logits [B, 1, 80, 80]
+        """
+        return self.conv(x)

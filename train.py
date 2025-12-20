@@ -470,8 +470,14 @@ def train(hyp, opt, device, tb_writer=None):
 
             # Forward
             with amp.autocast(enabled=cuda):
-                pred = model(imgs)  # forward
-                loss, loss_items = compute_loss(pred, targets.to(device))  # loss scaled by batch_size
+                #pred = model(imgs)  # forward
+                #loss, loss_items = compute_loss(pred, targets.to(device))  # loss scaled by batch_size
+                if hasattr(model, 'obj_head'):  # Check if ObjectnessHead exists
+                    pred, obj_clean = model(imgs)  # Returns both
+                    loss, loss_items = compute_loss(pred, targets, obj_clean=obj_clean)
+                else:
+                    pred = model(imgs)
+                    loss, loss_items = compute_loss(pred, targets)
                 if rank != -1:
                     loss *= opt.world_size  # gradient averaged between devices in DDP mode
                 if opt.quad:

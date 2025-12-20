@@ -247,8 +247,13 @@ class Model(nn.Module):
                 y.append(yi)
             return torch.cat(y, 1), None  # augmented inference, train
         else:
-            return self.forward_once(x, x2, profile)  # single-scale inference, train
-        
+            #return self.forward_once(x, x2, profile)  # single-scale inference, train
+            y = self.forward_once(x, profile)
+            # Check if we have ObjectnessHead (layer 44 in your YAML)
+            if hasattr(self, 'obj_clean') and self.obj_clean is not None:
+                return y, self.obj_clean  # Return both detection and clean objectness
+            return y
+            
 
     def get_module_scale(self, channels):
         """Infer pyramid scale from channel dimensions"""
@@ -293,6 +298,7 @@ class Model(nn.Module):
         """
         y, dt = [], []
         fused_contexts = {}  # Store fused outputs for progressive chain
+        self.obj_clean = None
         
         i = 0
         debug = self.training and hasattr(self, '_batch_count')
@@ -470,6 +476,15 @@ class Model(nn.Module):
                         fused_contexts[scale] = x
                     except ValueError:
                         pass
+            elif isinstance(m, ObjectnessHead):
+                # ObjectnessHead takes single tensor input (layer 29 in YAML)
+                x = m(x)  # [B, 256, 80, 80] → [B, 1, 80, 80]
+                self.obj_clean = x  # ← Store for loss computation
+                
+                if debug:
+                    print(f"\nLayer {i}: ObjectnessHead")
+                    print(f"  Input: {x.shape}")
+                    print(f"  Output (obj_clean): {x.shape}")
                 
             else:
                 # Standard module processing
@@ -801,6 +816,10 @@ def parse_model(d, ch):  # model_dict, input_channels(3)
             
             c2 = ch[f_idx]  # Output channels = input channels
             args = [c2] + args[1:] if len(args) > 1 else [c2]
+        elif m is ObjectnessHead:
+            c1 = ch[f]
+            c2 = 1  # Single channel output
+            args = [c1]
         
         elif m is SemanticScale:
             c1 = ch[f]
