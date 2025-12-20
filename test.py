@@ -408,7 +408,7 @@ def test(data,
                 train_out = None
 
             # Compute loss
-            if compute_loss:
+            if compute_loss and train_out is not None:
                 loss += compute_loss([x.float() for x in train_out], targets)[1][:3]  # box, obj, cls
 
             # Run NMS
