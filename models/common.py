@@ -2017,3 +2017,70 @@ class SemanticScale(nn.Module):
             [B, C, H, W] - Scaled features (×0.3)
         """
         return self.scale * x
+
+class P3_BoxRefinement(nn.Module):
+    """
+    Minimal spatial refinement for P3 small object localization.
+    
+    Components:
+    - Depthwise conv: Local edge/boundary detection
+    - Pointwise conv: Channel mixing
+    - Spatial attention: Position-aware weighting
+    - Residual: Safe gradient flow
+    """
+    def __init__(self, channels=256):
+        super().__init__()
+        
+        # Depthwise 3×3 (local spatial features)
+        self.dw_conv = nn.Conv2d(
+            channels, channels, 
+            kernel_size=3, padding=1, 
+            groups=channels,
+            bias=False
+        )
+        self.bn1 = nn.BatchNorm2d(channels)
+        
+        # Pointwise 1×1 (channel mixing)
+        self.pw_conv = nn.Conv2d(channels, channels, 1, bias=False)
+        self.bn2 = nn.BatchNorm2d(channels)
+        
+        # Spatial attention (7×7 for local context)
+        self.spatial_attn = nn.Sequential(
+            nn.Conv2d(channels, 1, 7, padding=3),
+            nn.Sigmoid()
+        )
+        
+        self.act = nn.SiLU()
+        
+        # Learnable residual scale
+        self.scale = nn.Parameter(torch.tensor(0.1))
+        
+        self._init_weights()
+    
+    def _init_weights(self):
+        for m in self.modules():
+            if isinstance(m, nn.Conv2d):
+                nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
+            elif isinstance(m, nn.BatchNorm2d):
+                nn.init.constant_(m.weight, 1)
+                nn.init.constant_(m.bias, 0)
+    
+    def forward(self, x):
+        identity = x
+        
+        # Depthwise: Capture local spatial patterns
+        out = self.dw_conv(x)
+        out = self.bn1(out)
+        out = self.act(out)
+        
+        # Pointwise: Mix channels
+        out = self.pw_conv(out)
+        out = self.bn2(out)
+        out = self.act(out)
+        
+        # Spatial attention: Position-aware weighting
+        attn_map = self.spatial_attn(out)  # [B, 1, H, W]
+        out = out * attn_map
+        
+        # Residual connection with learned scale
+        return identity + self.scale * out

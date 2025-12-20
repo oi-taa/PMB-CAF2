@@ -820,6 +820,10 @@ def parse_model(d, ch):  # model_dict, input_channels(3)
             d_model = args[0] if len(args) > 0 else c2
             coarse_channels = args[1] if len(args) > 1 else c2
             m_ = m(d_model, 4, 0.1, 8, 8, coarse_channels)
+        elif m is P3_BoxRefinement:
+            c1 = ch[f]
+            c2 = c1  # Output channels = input channels
+            args = [c1]  # Just pass channels
         
         elif m is UCAM:
             c2 = ch[f[0]]
