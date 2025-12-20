@@ -1054,7 +1054,7 @@ def train_rgb_ir(hyp, opt, device, tb_writer=None):
             imgs = imgs.to(device, non_blocking=True).float() / 255.0  # uint8 to float32, 0-255 to 0.0-1.0
             imgs_rgb = imgs[:, :3, :, :]
             imgs_ir = imgs[:, 3:, :, :]
-            pred = model(imgs)
+            pred = model(imgs_rgb, imgs_ir)
             monitor_scp_comprehensive(model, i, epoch)
             
             # FQY my code 训练数据可视化
