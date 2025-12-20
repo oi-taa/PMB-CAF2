@@ -1095,8 +1095,17 @@ def train_rgb_ir(hyp, opt, device, tb_writer=None):
             # Forward
             with amp.autocast(enabled=cuda):
                 # pred = model(imgs)  # forward
-                pred = model(imgs_rgb, imgs_ir)  # forward
-                loss, loss_items = compute_loss(pred, targets.to(device))  # loss scaled by batch_size
+                '''pred = model(imgs_rgb, imgs_ir)  # forward
+                loss, loss_items = compute_loss(pred, targets.to(device))  # loss scaled by batch_size'''
+                output = model(imgs_rgb, imgs_ir)  # forward
+                # Handle objectness output
+                if isinstance(output, tuple):
+                    pred, obj_clean = output
+                    loss, loss_items = compute_loss(pred, targets.to(device), obj_clean=obj_clean)
+                else:
+                    pred = output
+                    loss, loss_items = compute_loss(pred, targets.to(device))
+    
                 if rank != -1:
                     loss *= opt.world_size  # gradient averaged between devices in DDP mode
                 if opt.quad:

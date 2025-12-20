@@ -248,7 +248,11 @@ class Model(nn.Module):
             return torch.cat(y, 1), None  # augmented inference, train
         else:
             #return self.forward_once(x, x2, profile)  # single-scale inference, train
-            y = self.forward_once(x, profile)
+            if x2 is None:
+                x2_input = x  # Use same input for both streams
+            else:
+                x2_input = x2  # Use separate thermal input
+            y = self.forward_once(x, x2_input, profile)
             # Check if we have ObjectnessHead (layer 44 in your YAML)
             if hasattr(self, 'obj_clean') and self.obj_clean is not None:
                 return y, self.obj_clean  # Return both detection and clean objectness
