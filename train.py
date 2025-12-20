@@ -849,14 +849,14 @@ def train_rgb_ir(hyp, opt, device, tb_writer=None):
 
     # Resume
     # Replace the problematic section in train_rgb_ir function around line 671
-
-    # Resume
     start_epoch, best_fitness = 0, 0.0
     best_score, wait = -float('inf'), 0
     best_weights = None
     warmup_epochs = 5
 
     if pretrained:
+        # ✅ HANDLE BOTH OLD (full model) AND NEW (state_dict) CHECKPOINT FORMATS
+        
         # Optimizer (safe load with better error handling)
         opt_sd_saved = ckpt.get('optimizer', None)
         if opt_sd_saved is not None:
@@ -864,43 +864,23 @@ def train_rgb_ir(hyp, opt, device, tb_writer=None):
                 optimizer.load_state_dict(opt_sd_saved)
                 best_fitness = ckpt.get('best_fitness', 0.0)
                 print("✅ Loaded optimizer state from checkpoint.")
-                print(f" Best fitness: {float(best_fitness):.4f}")
+                print(f"   Best fitness: {float(best_fitness):.4f}")
             except (ValueError, RuntimeError) as e:
                 # Handle parameter group mismatch
                 print(f"⚠️  Optimizer state mismatch: {e}")
-                print("   Adapting saved optimizer state...")
-                
-                # Build adapted state dict using current param_groups
-                cur_sd = optimizer.state_dict()
-                new_opt_sd = {'state': {}, 'param_groups': cur_sd['param_groups']}
-                
-                # Try to copy hyperparameters if group counts match
-                saved_groups = opt_sd_saved.get('param_groups', [])
-                if len(saved_groups) == len(new_opt_sd['param_groups']):
-                    for i, g in enumerate(new_opt_sd['param_groups']):
-                        for k in ('lr', 'weight_decay', 'eps', 'betas', 'momentum'):
-                            if k in saved_groups[i]:
-                                g[k] = saved_groups[i][k]
-                    print("   ✅ Copied hyperparameters from saved optimizer")
-                else:
-                    print(f"   ⚠️  Group count mismatch: saved={len(saved_groups)}, current={len(new_opt_sd['param_groups'])}")
-                    print("   Using current hyperparameters")
-                
-                # Attempt to load adapted dict
-                try:
-                    optimizer.load_state_dict(new_opt_sd)
-                    best_fitness = ckpt.get('best_fitness', 0.0)
-                    print("   ✅ Loaded adapted optimizer state (per-parameter state cleared)")
-                except Exception as ex2:
-                    print(f"   ❌ Could not load adapted optimizer: {ex2}")
-                    print("   Proceeding with fresh optimizer")
+                print("   Proceeding with fresh optimizer")
         else:
             print("⚠️  No optimizer state in checkpoint - starting fresh optimizer")
 
-        # EMA
+        # EMA - handle both formats
         if ema and ckpt.get('ema'):
             try:
-                ema.ema.load_state_dict(ckpt['ema'].float().state_dict(), strict=False)
+                if isinstance(ckpt['ema'], dict):
+                    # New format: state_dict
+                    ema.ema.load_state_dict(ckpt['ema'], strict=False)
+                else:
+                    # Old format: full model object
+                    ema.ema.load_state_dict(ckpt['ema'].float().state_dict(), strict=False)
                 ema.updates = ckpt.get('updates', 0)
                 print(f"✅ Loaded EMA state (updates={ema.updates})")
             except Exception as e:
@@ -914,7 +894,7 @@ def train_rgb_ir(hyp, opt, device, tb_writer=None):
             except Exception as e:
                 print(f"⚠️  Could not load training history: {e}")
 
-        # Scheduler state (IMPORTANT - was missing!)
+        # Scheduler state
         if ckpt.get('scheduler') is not None and not opt.resume:
             try:
                 scheduler.load_state_dict(ckpt['scheduler'])
@@ -1401,15 +1381,17 @@ def train_rgb_ir(hyp, opt, device, tb_writer=None):
                     break
 
             if (not opt.nosave) or (final_epoch and not opt.evolve):
+                base_model = model.module if is_parallel(model) else model
+                
                 ckpt = {
                     'epoch': epoch,
                     'best_fitness': best_fitness,
                     'training_results': results_file.read_text(),
-                    'model': deepcopy(model.module if is_parallel(model) else model).half(),
-                    'ema': deepcopy(ema.ema).half(),
-                    'updates': ema.updates,
-                    'optimizer': optimizer.state_dict(),  # ✅ ALWAYS save optimizer
-                    'scheduler': scheduler.state_dict(),   # ✅ ADD scheduler state
+                    'model': base_model.state_dict(),  # ✅ Use state_dict instead of deepcopy
+                    'ema': ema.ema.state_dict() if ema else None,  # ✅ Use state_dict instead of deepcopy
+                    'updates': ema.updates if ema else 0,
+                    'optimizer': optimizer.state_dict(),
+                    'scheduler': scheduler.state_dict(),
                     'wandb_id': wandb_logger.wandb_run.id if wandb_logger.wandb else None
                 }
 
