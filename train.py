@@ -1054,7 +1054,7 @@ def train_rgb_ir(hyp, opt, device, tb_writer=None):
             imgs = imgs.to(device, non_blocking=True).float() / 255.0  # uint8 to float32, 0-255 to 0.0-1.0
             imgs_rgb = imgs[:, :3, :, :]
             imgs_ir = imgs[:, 3:, :, :]
-            pred = model(imgs)
+            pred = model(imgs_rgb, imgs_ir)
             monitor_scp_comprehensive(model, i, epoch)
             
             # FQY my code 训练数据可视化
@@ -1094,22 +1094,16 @@ def train_rgb_ir(hyp, opt, device, tb_writer=None):
 
             # Forward
             with amp.autocast(enabled=cuda):
-                output = model(imgs)   # forward
-                #pred = model(imgs_rgb, imgs_ir)  # forward
-                '''loss, loss_items = compute_loss(pred, targets.to(device))  # loss scaled by batch_size
-                if rank != -1:
-                    loss *= opt.world_size  # gradient averaged between devices in DDP mode
-                if opt.quad:
-                    loss *= 4.'''
+                # pred = model(imgs)  # forward
+                output = model(imgs_rgb, imgs_ir)  # forward
                 if isinstance(output, tuple):
                     pred, obj_clean = output
                     loss, loss_items = compute_loss(pred, targets.to(device), obj_clean=obj_clean)
                 else:
                     pred = output
                     loss, loss_items = compute_loss(pred, targets.to(device))
-                
                 if rank != -1:
-                    loss *= opt.world_size
+                    loss *= opt.world_size  # gradient averaged between devices in DDP mode
                 if opt.quad:
                     loss *= 4.
 
