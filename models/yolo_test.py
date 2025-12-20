@@ -229,9 +229,7 @@ class Model(nn.Module):
         self.info()
         logger.info('')
 
-    def forward(self, x, x2=None, augment=False, profile=False):
-        if x2 is not None:
-            x = torch.cat([x, x2], dim=1)  
+    def forward(self, x, x2, augment=False, profile=False):
         if augment:
             img_size = x.shape[-2:]  # height, width
             s = [1, 0.83, 0.67]  # scales
