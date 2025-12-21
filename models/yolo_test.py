@@ -231,19 +231,23 @@ class Model(nn.Module):
 
     def forward(self, x, x2, augment=False, profile=False):
         if augment:
-            img_size = x.shape[-2:]  # height, width
+            img_size = x.shape[-2:]
             s = [1, 0.83, 0.67]  # scales
             f = [None, 3, None]  # flips (2-ud, 3-lr)
             y = []  # outputs
             for si, fi in zip(s, f):
-                xi = scale_img(x.flip(fi) if fi else x, si, gs=int(self.stride.max()))
-                yi = self.forward_once(xi, xi)[0]  # forward (needs both x1 and x2)
-                # cv2.imwrite(f'img_{si}.jpg', 255 * xi[0].cpu().numpy().transpose((1, 2, 0))[:, :, ::-1])  # save
-                yi[..., :4] /= si  # de-scale
+                # Apply augmentation to BOTH RGB and Thermal streams
+                xi_rgb = scale_img(x.flip(fi) if fi else x, si, gs=int(self.stride.max()))
+                xi_thermal = scale_img(x2.flip(fi) if fi else x2, si, gs=int(self.stride.max()))
+                
+                yi = self.forward_once(xi_rgb, xi_thermal)[0]  # forward
+                yi[..., :4] /= si  # de-scale boxes
+                
                 if fi == 2:
                     yi[..., 1] = img_size[0] - yi[..., 1]  # de-flip ud
                 elif fi == 3:
                     yi[..., 0] = img_size[1] - yi[..., 0]  # de-flip lr
+                
                 y.append(yi)
             return torch.cat(y, 1), None  # augmented inference, train
         else:
