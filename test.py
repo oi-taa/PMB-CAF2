@@ -319,7 +319,20 @@ def test(data,
         (save_dir / 'labels' if save_txt else save_dir).mkdir(parents=True, exist_ok=True)  # make dir
 
         # Load model
-        model = attempt_load(weights, map_location=device)  # load FP32 model
+        if opt.cfg:
+            # If config provided, build model and load weights
+            from models.yolo_test import Model
+            import yaml
+            with open(opt.cfg) as f:
+                cfg = yaml.safe_load(f)
+            model = Model(cfg=cfg).to(device)
+            ckpt = torch.load(weights[0], map_location=device, weights_only=False)
+            state_dict = ckpt.get('ema') if ckpt.get('ema') else ckpt.get('model')
+            model.load_state_dict(state_dict, strict=False)
+            model.float().eval()
+        else:
+            # Use attempt_load (for old checkpoints)
+            model = attempt_load(weights, map_location=device)
         total_params = sum(p.numel() for p in model.parameters())
         print(f"Model parameters: {total_params/1e6:.1f}M")
         gs = max(int(model.stride.max()), 32)  # grid size (max stride)
@@ -1092,6 +1105,7 @@ if __name__ == '__main__':
     parser.add_argument('--weights', nargs='+', type=str, default='/home/fqy/proj/multispectral-object-detection/best.pt', help='model.pt path(s)')
     parser.add_argument('--data', type=str, default='./data/multispectral/FLIR_aligned.yaml', help='*.data path')
     parser.add_argument('--batch-size', type=int, default=64, help='size of each image batch')
+    parser.add_argument('--cfg', type=str, default='', help='model.yaml path')  # ← ADD THIS LINE
     parser.add_argument('--img-size', type=int, default=640, help='inference size (pixels)')
     parser.add_argument('--conf-thres', type=float, default=0.001, help='object confidence threshold')
     parser.add_argument('--iou-thres', type=float, default=0.5, help='IOU threshold for NMS')
