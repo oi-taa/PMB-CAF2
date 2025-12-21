@@ -116,27 +116,69 @@ def attempt_load(weights, map_location=None):
     for w in weights if isinstance(weights, list) else [weights]:
         attempt_download(w)
         ckpt = torch.load(w, map_location=map_location, weights_only=False)  # load
+        
+        # Get model config if available
+        cfg = ckpt.get('yaml', None)
+        
+        # Determine which weights to use (prefer EMA)
         if ckpt.get('ema'):
-            # Handle both state_dict and full model formats
-            if isinstance(ckpt['ema'], dict):
-                # New format: state_dict only
-                from models.yolo_test import Model
-                model_temp = Model(cfg=ckpt.get('yaml', cfg)).to(device)
-                model_temp.load_state_dict(ckpt['ema'])
-                model.append(model_temp.float().fuse().eval())
-            else:
-                # Old format: full model object
-                model.append(ckpt['ema'].float().fuse().eval())
+            state_dict = ckpt['ema']
         elif ckpt.get('model'):
-            if isinstance(ckpt['model'], dict):
-                # New format: state_dict only
-                from models.yolo_test import Model
-                model_temp = Model(cfg=ckpt.get('yaml', cfg)).to(device)
-                model_temp.load_state_dict(ckpt['model'])
-                model.append(model_temp.float().fuse().eval())
+            state_dict = ckpt['model']
+        else:
+            raise ValueError(f"Checkpoint {w} missing 'model' or 'ema' key")
+        
+        # Handle both state_dict and full model formats
+        if isinstance(state_dict, dict) and not hasattr(state_dict, 'eval'):
+            # New format: state_dict (OrderedDict)
+            from models.yolo_test import Model
+            
+            # Try to get config from checkpoint or directory
+            if cfg is None:
+                import os
+                import yaml
+                
+                # Try to find opt.yaml in checkpoint directory
+                ckpt_dir = os.path.dirname(os.path.dirname(w))  # weights/ -> exp_dir/
+                opt_file = os.path.join(ckpt_dir, 'opt.yaml')
+                
+                if os.path.exists(opt_file):
+                    with open(opt_file) as f:
+                        opt = yaml.safe_load(f)
+                        cfg = opt.get('cfg', None)
+                
+                if cfg is None:
+                    raise ValueError(
+                        f"Cannot load {w}: checkpoint is in state_dict format but missing 'yaml' key.\n"
+                        f"This usually means the checkpoint was saved with a newer training script.\n"
+                        f"Solution: Re-train with current code, or use an older checkpoint."
+                    )
+            
+            # Load config if it's a path string
+            if isinstance(cfg, str):
+                import yaml
+                with open(cfg) as f:
+                    cfg_dict = yaml.safe_load(f)
             else:
-                # Old format: full model object
-                model.append(ckpt['model'].float().fuse().eval())
+                cfg_dict = cfg
+            
+            # Create model and load weights
+            device = map_location if map_location else 'cpu'
+            model_temp = Model(cfg=cfg_dict).to(device)
+            model_temp.load_state_dict(state_dict, strict=False)
+            
+            # Fuse and eval
+            try:
+                model.append(model_temp.float().fuse().eval())
+            except:
+                # If fuse fails, just eval
+                model.append(model_temp.float().eval())
+        else:
+            # Old format: full model object (nn.Module)
+            try:
+                model.append(state_dict.float().fuse().eval())
+            except:
+                model.append(state_dict.float().eval())
 
     # Compatibility updates
     for m in model.modules():
