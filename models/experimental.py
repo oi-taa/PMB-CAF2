@@ -116,7 +116,27 @@ def attempt_load(weights, map_location=None):
     for w in weights if isinstance(weights, list) else [weights]:
         attempt_download(w)
         ckpt = torch.load(w, map_location=map_location, weights_only=False)  # load
-        model.append(ckpt['ema' if ckpt.get('ema') else 'model'].float().fuse().eval())  # FP32 model
+        if ckpt.get('ema'):
+            # Handle both state_dict and full model formats
+            if isinstance(ckpt['ema'], dict):
+                # New format: state_dict only
+                from models.yolo_test import Model
+                model_temp = Model(cfg=ckpt.get('yaml', cfg)).to(device)
+                model_temp.load_state_dict(ckpt['ema'])
+                model.append(model_temp.float().fuse().eval())
+            else:
+                # Old format: full model object
+                model.append(ckpt['ema'].float().fuse().eval())
+        elif ckpt.get('model'):
+            if isinstance(ckpt['model'], dict):
+                # New format: state_dict only
+                from models.yolo_test import Model
+                model_temp = Model(cfg=ckpt.get('yaml', cfg)).to(device)
+                model_temp.load_state_dict(ckpt['model'])
+                model.append(model_temp.float().fuse().eval())
+            else:
+                # Old format: full model object
+                model.append(ckpt['model'].float().fuse().eval())
 
     # Compatibility updates
     for m in model.modules():
