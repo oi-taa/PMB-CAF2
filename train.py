@@ -1396,6 +1396,7 @@ def train_rgb_ir(hyp, opt, device, tb_writer=None):
                     'updates': ema.updates if ema else 0,
                     'optimizer': optimizer.state_dict(),
                     'scheduler': scheduler.state_dict(),
+                    'yaml': base_model.yaml, 
                     'wandb_id': wandb_logger.wandb_run.id if wandb_logger.wandb else None
                 }
 
